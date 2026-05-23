@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "Claude Counter",
-  "version": "0.4.2",
+  "name": "Claude Token Counter",
+  "version": "1.0.0",
   "browser_specific_settings": {
     "gecko": {
       "id": "{236c6889-52b6-4454-bc4b-5a2ad18effa2}",
@@ -19,7 +19,7 @@
     "256": "icons/icon256.png"
   },
   "action": {
-    "default_title": "Claude Counter",
+    "default_title": "Claude Token Counter",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png",
