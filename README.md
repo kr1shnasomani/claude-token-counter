@@ -2,7 +2,7 @@
 
 A minimal browser extension that shows token count, cache timer, and usage bars on claude.ai.
 
-![Claude Token Counter screenshot](./screenshot.png)
+![Claude Counter screenshot](./screenshot.png)
 
 ## Features
 
@@ -12,10 +12,18 @@ A minimal browser extension that shows token count, cache timer, and usage bars 
 
 ## Installation
 
-Available directly from the Chrome Web Store:
+**Chrome / Edge / Chromium**
+1. Download the latest `claude-token-counter-chrome-*.zip` from the [Releases](../../releases) page.
+2. Go to `chrome://extensions` and enable **Developer mode**.
+3. Drag and drop the zip onto the page.
+4. Or install from [Chrome Web Store](https://chromewebstore.google.com/detail/bioobpobpbeohjoefndgkiaakboimpch) for Chrome
 
-1. Visit the **Claude Token Counter** extension page (link to be added once published).
-2. Click **Add to Chrome**.
+**Firefox**
+1. Download the latest `claude-token-counter-firefox-*.zip` from the [Releases](../../releases) page.
+2. Drag it into any Firefox window and click **Add**.
+
+**Userscript (Tampermonkey / Greasemonkey)**
+1. Install the userscript by downloading `claude-token-counter-userscript-*.js` from the [Releases](../../releases) page.
 
 ## How it works
 
@@ -32,6 +40,7 @@ Available directly from the Chrome Web Store:
 
 ## Credits
 
+- Forked from [she-llac/claude-counter](https://github.com/she-llac/claude-counter)
 - Token counting via [gpt-tokenizer](https://github.com/niieani/gpt-tokenizer) (MIT)
 - Inspired by [Claude Usage Tracker](https://github.com/lugia19/Claude-Usage-Extension) by lugia19
 

@@ -15,20 +15,36 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Build Extension ZIP
+      - name: Build Artifacts
         run: |
-          mkdir dist
+          # Extract version from tag (e.g., v1.0.0)
+          VERSION_TAG=${GITHUB_REF_NAME}
+          
+          # 1. Prepare Chrome / Edge Artifact
+          mkdir -p dist/chrome
+          cp -r src icons LICENSE README.md THIRD_PARTY_NOTICES.md PRIVACY.md dist/chrome/
+          # Remove Firefox-specific settings to prevent warnings in Chrome Web Store
+          jq 'del(.browser_specific_settings)' manifest.json > dist/chrome/manifest.json
+          cd dist/chrome
+          zip -r ../../claude-token-counter-chrome-${VERSION_TAG}.zip *
+          cd ../..
 
-          # Copy necessary files for the Chrome Extension
-          cp -r src icons manifest.json LICENSE README.md THIRD_PARTY_NOTICES.md PRIVACY.md dist/
+          # 2. Prepare Firefox Artifact
+          mkdir -p dist/firefox
+          # Firefox requires the browser_specific_settings.gecko.id which is already in manifest.json
+          cp -r src icons manifest.json LICENSE README.md THIRD_PARTY_NOTICES.md PRIVACY.md dist/firefox/
+          cd dist/firefox
+          zip -r ../../claude-token-counter-firefox-${VERSION_TAG}.zip *
+          cd ../..
 
-          # Create zip archive
-          cd dist
-          zip -r ../claude-token-counter-extension.zip *
-          cd ..
+          # 3. Prepare Userscript
+          cp userscript/claude-counter.user.js ./claude-token-counter-userscript-${VERSION_TAG}.js
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: claude-token-counter-extension.zip
+          files: |
+            claude-token-counter-chrome-*.zip
+            claude-token-counter-firefox-*.zip
+            claude-token-counter-userscript-*.js
           generate_release_notes: true
