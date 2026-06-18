@@ -124,6 +124,7 @@
 			this.sessionWindowStartMs = null;
 			this.weeklyWindowStartMs = null;
 			this.refreshingUsage = false;
+			this.refreshBtn = null;
 
 			this.domObserver = null;
 		}
@@ -143,7 +144,7 @@
 		}
 
 		refreshProgressChrome() {
-			const { strokeColor, fillColor, markerColor } = this.getProgressChrome();
+			const { strokeColor, fillColor, markerColor, boldColor } = this.getProgressChrome();
 
 			const applyBarChrome = (bar, { fillWarn } = {}) => {
 				if (!bar) return;
@@ -156,6 +157,7 @@
 			applyBarChrome(this.lengthBar, { fillWarn: fillColor });
 			applyBarChrome(this.sessionBar, { fillWarn: CC.COLORS.RED_WARNING });
 			applyBarChrome(this.weeklyBar, { fillWarn: CC.COLORS.RED_WARNING });
+			if (this.refreshBtn) this.refreshBtn.style.color = boldColor;
 		}
 
 		initialize() {
@@ -257,18 +259,31 @@
 			this.weeklyGroup.appendChild(this.weeklyBar);
 			this.weeklyGroup.appendChild(this.weeklyUsageSpan);
 
+			this.refreshBtn = document.createElement('button');
+			this.refreshBtn.className = 'cc-refreshBtn';
+			this.refreshBtn.setAttribute('aria-label', 'Refresh usage');
+			this.refreshBtn.innerHTML =
+				'<svg class="cc-refreshIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" width="11" height="11" aria-hidden="true">' +
+				'<polyline points="23 4 23 10 17 10"/>' +
+				'<path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>' +
+				'</svg>';
+
 			this.usageLine.appendChild(this.sessionGroup);
 			this.usageLine.appendChild(this.weeklyGroup);
+			this.usageLine.appendChild(this.refreshBtn);
 
 			this.refreshProgressChrome();
 
-			this.usageLine.addEventListener('click', async () => {
+			this.refreshBtn.addEventListener('click', async (e) => {
+				e.stopPropagation();
 				if (!this.onUsageRefresh || this.refreshingUsage) return;
 				this.refreshingUsage = true;
+				this.refreshBtn.classList.add('cc-refreshBtn--spinning');
 				this.usageLine.classList.add('cc-usageRow--dim');
 				try {
 					await this.onUsageRefresh();
 				} finally {
+					this.refreshBtn.classList.remove('cc-refreshBtn--spinning');
 					this.usageLine.classList.remove('cc-usageRow--dim');
 					this.refreshingUsage = false;
 				}
@@ -463,8 +478,9 @@
 				const rawPct = session.utilization;
 				const pct = Math.round(rawPct * 10) / 10;
 				this.sessionResetMs = session.resets_at ? Date.parse(session.resets_at) : null;
-				this.sessionWindowStartMs = this.sessionResetMs ? this.sessionResetMs - 5 * 60 * 60 * 1000 : null;
-				const resetText = this.sessionResetMs ? ` · resets in ${formatResetCountdown(this.sessionResetMs)}` : '';
+				const sessionWindowMs = (session.window_hours ?? 5) * 60 * 60 * 1000;
+				this.sessionWindowStartMs = this.sessionResetMs ? this.sessionResetMs - sessionWindowMs : null;
+				const resetText = this.sessionResetMs ? ` (resets in ${formatResetCountdown(this.sessionResetMs)})` : '';
 				this.sessionUsageSpan.textContent = `Session: ${pct}%${resetText}`;
 
 				const width = Math.max(0, Math.min(100, rawPct));
@@ -490,8 +506,9 @@
 				const rawPct = weekly.utilization;
 				const pct = Math.round(rawPct * 10) / 10;
 				this.weeklyResetMs = weekly.resets_at ? Date.parse(weekly.resets_at) : null;
-				this.weeklyWindowStartMs = this.weeklyResetMs ? this.weeklyResetMs - 7 * 24 * 60 * 60 * 1000 : null;
-				const resetText = this.weeklyResetMs ? ` · resets in ${formatResetCountdown(this.weeklyResetMs)}` : '';
+				const weeklyWindowMs = (weekly.window_hours ?? 168) * 60 * 60 * 1000;
+				this.weeklyWindowStartMs = this.weeklyResetMs ? this.weeklyResetMs - weeklyWindowMs : null;
+				const resetText = this.weeklyResetMs ? ` (resets in ${formatResetCountdown(this.weeklyResetMs)})` : '';
 				this.weeklyUsageSpan.textContent = `Weekly: ${pct}%${resetText}`;
 
 				const width = Math.max(0, Math.min(100, rawPct));
@@ -553,18 +570,18 @@
 
 			// Reset countdown text + time markers
 			if (this.sessionResetMs && this.sessionUsageSpan?.textContent) {
-				const idx = this.sessionUsageSpan.textContent.indexOf('· resets in');
+				const idx = this.sessionUsageSpan.textContent.indexOf('(resets in');
 				if (idx !== -1) {
-					const prefix = this.sessionUsageSpan.textContent.slice(0, idx + '· resets in '.length);
-					this.sessionUsageSpan.textContent = `${prefix}${formatResetCountdown(this.sessionResetMs)}`;
+					const prefix = this.sessionUsageSpan.textContent.slice(0, idx + '(resets in '.length);
+					this.sessionUsageSpan.textContent = `${prefix}${formatResetCountdown(this.sessionResetMs)})`;
 				}
 			}
 
 			if (this.weeklyResetMs && this.weeklyUsageSpan?.textContent) {
-				const idx = this.weeklyUsageSpan.textContent.indexOf('· resets in');
+				const idx = this.weeklyUsageSpan.textContent.indexOf('(resets in');
 				if (idx !== -1) {
-					const prefix = this.weeklyUsageSpan.textContent.slice(0, idx + '· resets in '.length);
-					this.weeklyUsageSpan.textContent = `${prefix}${formatResetCountdown(this.weeklyResetMs)}`;
+					const prefix = this.weeklyUsageSpan.textContent.slice(0, idx + '(resets in '.length);
+					this.weeklyUsageSpan.textContent = `${prefix}${formatResetCountdown(this.weeklyResetMs)})`;
 				}
 			}
 

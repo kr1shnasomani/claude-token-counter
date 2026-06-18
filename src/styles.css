@@ -12,7 +12,6 @@
 .cc-usageRow {
 	position: relative;
 	z-index: 50;
-	cursor: pointer;
 	user-select: none;
 	transition: opacity 150ms ease;
 }
@@ -119,6 +118,38 @@
 	-webkit-user-select: none;
 	user-select: none;
 	cursor: help;
+}
+
+/* Refresh button */
+.cc-refreshBtn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+	padding: 2px;
+	background: none;
+	border: none;
+	cursor: pointer;
+	opacity: 0.45;
+	transition: opacity 150ms ease;
+	border-radius: 3px;
+}
+
+.cc-refreshBtn:hover {
+	opacity: 0.9;
+}
+
+.cc-refreshBtn:active {
+	opacity: 0.6;
+}
+
+@keyframes cc-spin {
+	from { transform: rotate(0deg); }
+	to { transform: rotate(360deg); }
+}
+
+.cc-refreshBtn--spinning .cc-refreshIcon {
+	animation: cc-spin 0.7s linear infinite;
 }
 
 /* Hide optional elements completely (no layout space) */
