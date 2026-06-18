@@ -513,6 +513,7 @@
 			this.sessionWindowStartMs = null;
 			this.weeklyWindowStartMs = null;
 			this.refreshingUsage = false;
+			this.refreshBtn = null;
 
 			this.domObserver = null;
 		}
@@ -532,7 +533,7 @@
 		}
 
 		refreshProgressChrome() {
-			const { strokeColor, fillColor, markerColor } = this.getProgressChrome();
+			const { strokeColor, fillColor, markerColor, boldColor } = this.getProgressChrome();
 
 			const applyBarChrome = (bar, { fillWarn } = {}) => {
 				if (!bar) return;
@@ -545,6 +546,7 @@
 			applyBarChrome(this.lengthBar, { fillWarn: fillColor });
 			applyBarChrome(this.sessionBar, { fillWarn: CC.COLORS.RED_WARNING });
 			applyBarChrome(this.weeklyBar, { fillWarn: CC.COLORS.RED_WARNING });
+			if (this.refreshBtn) this.refreshBtn.style.color = boldColor;
 		}
 
 		initialize() {
@@ -646,18 +648,31 @@
 			this.weeklyGroup.appendChild(this.weeklyBar);
 			this.weeklyGroup.appendChild(this.weeklyUsageSpan);
 
+			this.refreshBtn = document.createElement('button');
+			this.refreshBtn.className = 'cc-refreshBtn';
+			this.refreshBtn.setAttribute('aria-label', 'Refresh usage');
+			this.refreshBtn.innerHTML =
+				'<svg class="cc-refreshIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" width="11" height="11" aria-hidden="true">' +
+				'<polyline points="23 4 23 10 17 10"/>' +
+				'<path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>' +
+				'</svg>';
+
 			this.usageLine.appendChild(this.sessionGroup);
 			this.usageLine.appendChild(this.weeklyGroup);
+			this.usageLine.appendChild(this.refreshBtn);
 
 			this.refreshProgressChrome();
 
-			this.usageLine.addEventListener('click', async () => {
+			this.refreshBtn.addEventListener('click', async (e) => {
+				e.stopPropagation();
 				if (!this.onUsageRefresh || this.refreshingUsage) return;
 				this.refreshingUsage = true;
+				this.refreshBtn.classList.add('cc-refreshBtn--spinning');
 				this.usageLine.classList.add('cc-usageRow--dim');
 				try {
 					await this.onUsageRefresh();
 				} finally {
+					this.refreshBtn.classList.remove('cc-refreshBtn--spinning');
 					this.usageLine.classList.remove('cc-usageRow--dim');
 					this.refreshingUsage = false;
 				}
@@ -853,8 +868,9 @@
 				const rawPct = session.utilization;
 				const pct = Math.round(rawPct * 10) / 10;
 				this.sessionResetMs = session.resets_at ? Date.parse(session.resets_at) : null;
-				this.sessionWindowStartMs = this.sessionResetMs ? this.sessionResetMs - 5 * 60 * 60 * 1000 : null;
-				const resetText = this.sessionResetMs ? ` · resets in ${formatResetCountdown(this.sessionResetMs)}` : '';
+				const sessionWindowMs = (session.window_hours ?? 5) * 60 * 60 * 1000;
+				this.sessionWindowStartMs = this.sessionResetMs ? this.sessionResetMs - sessionWindowMs : null;
+				const resetText = this.sessionResetMs ? ` (resets in ${formatResetCountdown(this.sessionResetMs)})` : '';
 				this.sessionUsageSpan.textContent = `Session: ${pct}%${resetText}`;
 
 				const width = Math.max(0, Math.min(100, rawPct));
@@ -880,8 +896,9 @@
 				const rawPct = weekly.utilization;
 				const pct = Math.round(rawPct * 10) / 10;
 				this.weeklyResetMs = weekly.resets_at ? Date.parse(weekly.resets_at) : null;
-				this.weeklyWindowStartMs = this.weeklyResetMs ? this.weeklyResetMs - 7 * 24 * 60 * 60 * 1000 : null;
-				const resetText = this.weeklyResetMs ? ` · resets in ${formatResetCountdown(this.weeklyResetMs)}` : '';
+				const weeklyWindowMs = (weekly.window_hours ?? 168) * 60 * 60 * 1000;
+				this.weeklyWindowStartMs = this.weeklyResetMs ? this.weeklyResetMs - weeklyWindowMs : null;
+				const resetText = this.weeklyResetMs ? ` (resets in ${formatResetCountdown(this.weeklyResetMs)})` : '';
 				this.weeklyUsageSpan.textContent = `Weekly: ${pct}%${resetText}`;
 
 				const width = Math.max(0, Math.min(100, rawPct));
@@ -943,18 +960,18 @@
 
 			// Reset countdown text + time markers
 			if (this.sessionResetMs && this.sessionUsageSpan?.textContent) {
-				const idx = this.sessionUsageSpan.textContent.indexOf('· resets in');
+				const idx = this.sessionUsageSpan.textContent.indexOf('(resets in');
 				if (idx !== -1) {
-					const prefix = this.sessionUsageSpan.textContent.slice(0, idx + '· resets in '.length);
-					this.sessionUsageSpan.textContent = `${prefix}${formatResetCountdown(this.sessionResetMs)}`;
+					const prefix = this.sessionUsageSpan.textContent.slice(0, idx + '(resets in '.length);
+					this.sessionUsageSpan.textContent = `${prefix}${formatResetCountdown(this.sessionResetMs)})`;
 				}
 			}
 
 			if (this.weeklyResetMs && this.weeklyUsageSpan?.textContent) {
-				const idx = this.weeklyUsageSpan.textContent.indexOf('· resets in');
+				const idx = this.weeklyUsageSpan.textContent.indexOf('(resets in');
 				if (idx !== -1) {
-					const prefix = this.weeklyUsageSpan.textContent.slice(0, idx + '· resets in '.length);
-					this.weeklyUsageSpan.textContent = `${prefix}${formatResetCountdown(this.weeklyResetMs)}`;
+					const prefix = this.weeklyUsageSpan.textContent.slice(0, idx + '(resets in '.length);
+					this.weeklyUsageSpan.textContent = `${prefix}${formatResetCountdown(this.weeklyResetMs)})`;
 				}
 			}
 
@@ -976,7 +993,7 @@
 	CC.__ccUserscriptStarted = true;
 
 	const STYLE_ID = 'cc-userscript-styles';
-	const STYLES = '/* Header: tokens + cache timer */\n.cc-header {\n\tmargin-top: 2px;\n\tuser-select: none;\n}\n\n.cc-headerItem {\n\twhite-space: nowrap;\n}\n\n/* Usage row: session + weekly */\n.cc-usageRow {\n\tposition: relative;\n\tz-index: 50;\n\tcursor: pointer;\n\tuser-select: none;\n\ttransition: opacity 150ms ease;\n}\n\n.cc-usageRow--dim {\n\topacity: 0.6;\n}\n\n.cc-usageGroup {\n\tdisplay: flex;\n\talign-items: center;\n\tgap: 8px;\n\tflex: 1;\n\tmin-width: 0;\n}\n\n.cc-usageGroup--single {\n\twidth: 100%;\n}\n\n.cc-usageGroup--weekly {\n\tjustify-content: flex-end;\n}\n\n.cc-usageText {\n\twhite-space: nowrap;\n}\n\n/* Bars (mini + usage) */\n.cc-bar {\n\t--cc-radius: 3px;\n\t--cc-stroke: transparent;\n\t--cc-fill: transparent;\n\t--cc-fill-warn: var(--cc-fill);\n\t--cc-marker: transparent;\n\n\tposition: relative;\n\tbox-sizing: border-box;\n\twidth: 100%;\n\theight: 6px;\n\tborder-radius: var(--cc-radius);\n\tborder: 1px solid var(--cc-stroke);\n\toverflow: visible;\n\tuser-select: none;\n}\n\n.cc-bar__fill {\n\twidth: 0%;\n\theight: 100%;\n\tbackground: var(--cc-fill);\n\ttransition: width 300ms ease, background-color 300ms ease;\n\tborder-top-left-radius: max(0px, calc(var(--cc-radius) - 1px));\n\tborder-bottom-left-radius: max(0px, calc(var(--cc-radius) - 1px));\n\tborder-top-right-radius: 0;\n\tborder-bottom-right-radius: 0;\n}\n\n.cc-bar__fill.cc-full {\n\tborder-top-right-radius: max(0px, calc(var(--cc-radius) - 1px));\n\tborder-bottom-right-radius: max(0px, calc(var(--cc-radius) - 1px));\n}\n\n.cc-bar__fill.cc-warn {\n\tbackground: var(--cc-fill-warn);\n}\n\n.cc-bar__marker {\n\tposition: absolute;\n\ttop: 0;\n\tbottom: 0;\n\tleft: 0%;\n\twidth: 2px;\n\tbackground: var(--cc-marker);\n\tpointer-events: none;\n}\n\n.cc-bar--mini {\n\twidth: 60px;\n\theight: 7px;\n\t--cc-radius: 2px;\n}\n\n.cc-bar--usage {\n\theight: 10px;\n\tflex: 1;\n}\n\n/* Tooltips */\n.cc-tooltip {\n\tposition: fixed;\n\tz-index: 9999;\n\tpadding: 4px 8px;\n\tborder-radius: 4px;\n\tfont-size: 12px;\n\twhite-space: pre-line;\n\tuser-select: none;\n\tpointer-events: none;\n\topacity: 0;\n\ttransition: opacity 200ms ease;\n}\n\n.cc-tooltipTrigger {\n\t-webkit-touch-callout: none;\n\t-webkit-user-select: none;\n\tuser-select: none;\n\tcursor: help;\n}\n\n/* Hide optional elements completely (no layout space) */\n.cc-hidden {\n\tdisplay: none !important;\n}\n';
+	const STYLES = '/* Header: tokens + cache timer */\n.cc-header {\n\tmargin-top: 2px;\n\tuser-select: none;\n}\n\n.cc-headerItem {\n\twhite-space: nowrap;\n}\n\n/* Usage row: session + weekly */\n.cc-usageRow {\n\tposition: relative;\n\tz-index: 50;\n\tuser-select: none;\n\ttransition: opacity 150ms ease;\n}\n\n.cc-usageRow--dim {\n\topacity: 0.6;\n}\n\n.cc-usageGroup {\n\tdisplay: flex;\n\talign-items: center;\n\tgap: 8px;\n\tflex: 1;\n\tmin-width: 0;\n}\n\n.cc-usageGroup--single {\n\twidth: 100%;\n}\n\n.cc-usageGroup--weekly {\n\tjustify-content: flex-end;\n}\n\n.cc-usageText {\n\twhite-space: nowrap;\n}\n\n/* Bars (mini + usage) */\n.cc-bar {\n\t--cc-radius: 3px;\n\t--cc-stroke: transparent;\n\t--cc-fill: transparent;\n\t--cc-fill-warn: var(--cc-fill);\n\t--cc-marker: transparent;\n\n\tposition: relative;\n\tbox-sizing: border-box;\n\twidth: 100%;\n\theight: 6px;\n\tborder-radius: var(--cc-radius);\n\tborder: 1px solid var(--cc-stroke);\n\toverflow: visible;\n\tuser-select: none;\n}\n\n.cc-bar__fill {\n\twidth: 0%;\n\theight: 100%;\n\tbackground: var(--cc-fill);\n\ttransition: width 300ms ease, background-color 300ms ease;\n\tborder-top-left-radius: max(0px, calc(var(--cc-radius) - 1px));\n\tborder-bottom-left-radius: max(0px, calc(var(--cc-radius) - 1px));\n\tborder-top-right-radius: 0;\n\tborder-bottom-right-radius: 0;\n}\n\n.cc-bar__fill.cc-full {\n\tborder-top-right-radius: max(0px, calc(var(--cc-radius) - 1px));\n\tborder-bottom-right-radius: max(0px, calc(var(--cc-radius) - 1px));\n}\n\n.cc-bar__fill.cc-warn {\n\tbackground: var(--cc-fill-warn);\n}\n\n.cc-bar__marker {\n\tposition: absolute;\n\ttop: 0;\n\tbottom: 0;\n\tleft: 0%;\n\twidth: 2px;\n\tbackground: var(--cc-marker);\n\tpointer-events: none;\n}\n\n.cc-bar--mini {\n\twidth: 60px;\n\theight: 7px;\n\t--cc-radius: 2px;\n}\n\n.cc-bar--usage {\n\theight: 10px;\n\tflex: 1;\n}\n\n/* Tooltips */\n.cc-tooltip {\n\tposition: fixed;\n\tz-index: 9999;\n\tpadding: 4px 8px;\n\tborder-radius: 4px;\n\tfont-size: 12px;\n\twhite-space: pre-line;\n\tuser-select: none;\n\tpointer-events: none;\n\topacity: 0;\n\ttransition: opacity 200ms ease;\n}\n\n.cc-tooltipTrigger {\n\t-webkit-touch-callout: none;\n\t-webkit-user-select: none;\n\tuser-select: none;\n\tcursor: help;\n}\n\n/* Refresh button */\n.cc-refreshBtn {\n\tdisplay: inline-flex;\n\talign-items: center;\n\tjustify-content: center;\n\tflex-shrink: 0;\n\tpadding: 2px;\n\tbackground: none;\n\tborder: none;\n\tcursor: pointer;\n\topacity: 0.45;\n\ttransition: opacity 150ms ease;\n\tborder-radius: 3px;\n}\n\n.cc-refreshBtn:hover {\n\topacity: 0.9;\n}\n\n.cc-refreshBtn:active {\n\topacity: 0.6;\n}\n\n@keyframes cc-spin {\n\tfrom { transform: rotate(0deg); }\n\tto { transform: rotate(360deg); }\n}\n\n.cc-refreshBtn--spinning .cc-refreshIcon {\n\tanimation: cc-spin 0.7s linear infinite;\n}\n\n/* Hide optional elements completely (no layout space) */\n.cc-hidden {\n\tdisplay: none !important;\n}\n';
 
 	function injectStyles() {
 		if (document.getElementById(STYLE_ID)) return;
