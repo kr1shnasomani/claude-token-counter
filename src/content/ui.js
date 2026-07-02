@@ -146,17 +146,18 @@
 		refreshProgressChrome() {
 			const { strokeColor, fillColor, markerColor, boldColor } = this.getProgressChrome();
 
-			const applyBarChrome = (bar, { fillWarn } = {}) => {
+			const applyBarChrome = (bar, { fillCaution, fillWarn } = {}) => {
 				if (!bar) return;
 				bar.style.setProperty('--cc-stroke', strokeColor);
 				bar.style.setProperty('--cc-fill', fillColor);
+				bar.style.setProperty('--cc-fill-caution', fillCaution ?? fillColor);
 				bar.style.setProperty('--cc-fill-warn', fillWarn ?? fillColor);
 				bar.style.setProperty('--cc-marker', markerColor);
 			};
 
-			applyBarChrome(this.lengthBar, { fillWarn: fillColor });
-			applyBarChrome(this.sessionBar, { fillWarn: CC.COLORS.RED_WARNING });
-			applyBarChrome(this.weeklyBar, { fillWarn: CC.COLORS.RED_WARNING });
+			applyBarChrome(this.lengthBar, { fillCaution: fillColor, fillWarn: fillColor });
+			applyBarChrome(this.sessionBar, { fillCaution: CC.COLORS.AMBER_WARNING, fillWarn: CC.COLORS.RED_WARNING });
+			applyBarChrome(this.weeklyBar, { fillCaution: CC.COLORS.AMBER_WARNING, fillWarn: CC.COLORS.RED_WARNING });
 			if (this.refreshBtn) this.refreshBtn.style.color = boldColor;
 		}
 
@@ -481,16 +482,17 @@
 				const sessionWindowMs = (session.window_hours ?? 5) * 60 * 60 * 1000;
 				this.sessionWindowStartMs = this.sessionResetMs ? this.sessionResetMs - sessionWindowMs : null;
 				const resetText = this.sessionResetMs ? ` (resets in ${formatResetCountdown(this.sessionResetMs)})` : '';
-				this.sessionUsageSpan.textContent = `Session: ${pct}%${resetText}`;
+				this.sessionUsageSpan.textContent = `Hourly: ${pct}%${resetText}`;
 
 				const width = Math.max(0, Math.min(100, rawPct));
 				this.sessionBarFill.style.width = `${width}%`;
+				this.sessionBarFill.classList.toggle('cc-caution', width >= 75 && width < 90);
 				this.sessionBarFill.classList.toggle('cc-warn', width >= 90);
 				this.sessionBarFill.classList.toggle('cc-full', width >= 99.5);
 			} else {
 				this.sessionUsageSpan.textContent = '';
 				this.sessionBarFill.style.width = '0%';
-				this.sessionBarFill.classList.remove('cc-warn', 'cc-full');
+				this.sessionBarFill.classList.remove('cc-caution', 'cc-warn', 'cc-full');
 				this.sessionResetMs = null;
 				this.sessionWindowStartMs = null;
 			}
@@ -513,6 +515,7 @@
 
 				const width = Math.max(0, Math.min(100, rawPct));
 				this.weeklyBarFill.style.width = `${width}%`;
+				this.weeklyBarFill.classList.toggle('cc-caution', width >= 75 && width < 90);
 				this.weeklyBarFill.classList.toggle('cc-warn', width >= 90);
 				this.weeklyBarFill.classList.toggle('cc-full', width >= 99.5);
 			} else {
@@ -520,7 +523,7 @@
 				this.weeklyBar.classList.add('cc-hidden');
 				this.weeklyResetMs = null;
 				this.weeklyWindowStartMs = null;
-				this.weeklyBarFill.classList.remove('cc-warn', 'cc-full');
+				this.weeklyBarFill.classList.remove('cc-caution', 'cc-warn', 'cc-full');
 			}
 
 			this._updateMarkers();

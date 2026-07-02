@@ -45,6 +45,7 @@
 	--cc-radius: 3px;
 	--cc-stroke: transparent;
 	--cc-fill: transparent;
+	--cc-fill-caution: var(--cc-fill);
 	--cc-fill-warn: var(--cc-fill);
 	--cc-marker: transparent;
 
@@ -72,6 +73,10 @@
 .cc-bar__fill.cc-full {
 	border-top-right-radius: max(0px, calc(var(--cc-radius) - 1px));
 	border-bottom-right-radius: max(0px, calc(var(--cc-radius) - 1px));
+}
+
+.cc-bar__fill.cc-caution {
+	background: var(--cc-fill-caution);
 }
 
 .cc-bar__fill.cc-warn {
