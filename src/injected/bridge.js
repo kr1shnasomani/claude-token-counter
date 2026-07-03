@@ -116,6 +116,9 @@
 						const json = JSON.parse(raw);
 						if (json?.type === 'message_limit' && json.message_limit) {
 							post('cc:message_limit', json.message_limit);
+							reader.cancel().catch(() => {});
+							reader.releaseLock();
+							return;
 						}
 					} catch {
 						// ignore
