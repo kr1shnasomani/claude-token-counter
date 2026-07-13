@@ -1,49 +1,79 @@
-# Claude Token Counter
+<p align="center">
+  <img src="./icons/icon256.png" width="96" height="96" alt="Claude Token Counter icon">
+</p>
 
-A minimal browser extension that shows token count, cache timer, and usage bars on claude.ai.
+<h1 align="center">Claude Token Counter</h1>
 
-![Claude Counter screenshot](./screenshot.png)
+<p align="center"><b>A minimal browser extension that shows live token count, cache timer, and usage bars on claude.ai</b></p>
+
+<p align="center">
+  <a href="https://chromewebstore.google.com/detail/claude-token-counter/bioobpobpbeohjoefndgkiaakboimpch">
+    <img src="https://developer.chrome.com/static/docs/webstore/branding/image/iNEddTyWiMfLSwFD6qGq.png" alt="Available in the Chrome Web Store" height="58">
+  </a>
+  <a href="https://addons.mozilla.org/en-US/firefox/addon/claude-token-counter">
+    <img src="https://blog.mozilla.org/addons/files/2020/04/get-the-addon-fx-apr-2020.svg" alt="Get the Add-on for Firefox" height="58">
+  </a>
+</p>
+
+![Claude Token Counter Dark Mode](./darkmodess.jpg)
 
 ## Features
 
-- **Token count** — Approximate token count for the current conversation, with a mini progress bar against the 200k context limit
-- **Cache timer** — Countdown showing how long the conversation remains cached (cheaper to continue)
-- **Usage bars** — Session (5-hour) and weekly (7-day) usage from Claude's native API, with progress bars and reset countdowns (more accurate than the rounded /usage page)
+- **Token count**: approximate token count for the current conversation
+- **Cache timer**: countdown showing how long the conversation remains cached (cheaper to continue)
+- **Usage bars**: session (5 hour) and weekly (7 day) usage from Claude's native API, with progress bars and reset countdowns (more accurate than the rounded /usage page)
 
 ## Installation
 
-**Chrome / Edge / Chromium**
-1. Download the latest `claude-token-counter-chrome-*.zip` from the [Releases](../../releases) page.
-2. Go to `chrome://extensions` and enable **Developer mode**.
-3. Drag and drop the zip onto the page.
-4. Or install from [Chrome Web Store](https://chromewebstore.google.com/detail/bioobpobpbeohjoefndgkiaakboimpch) for Chrome
+**Chromium** (Chrome, Edge, Brave, Opera, Vivaldi, Arc, and any other Chromium-based browser)
+1. Install directly from the [Chrome Web Store](https://chromewebstore.google.com/detail/claude-token-counter/bioobpobpbeohjoefndgkiaakboimpch). Works out of the box on Chrome, Brave, Vivaldi, and Arc. On Edge, turn on **Allow extensions from other stores** under `edge://extensions` first. On Opera, click **Add to Opera** on the listing page.
+2. Or install locally: download the latest `claude-token-counter-chrome-*.zip` from the [Releases](../../releases) page, go to the browser's extensions page (`chrome://extensions` on Chrome, `edge://extensions` on Edge, `opera://extensions` on Opera, or the equivalent for your browser), enable **Developer mode**, and drag and drop the zip onto the page.
 
-**Firefox**
-1. Download the latest `claude-token-counter-firefox-*.zip` from the [Releases](../../releases) page.
-2. Drag it into any Firefox window and click **Add**.
+**Firefox** (requires Firefox 142 or later)
+1. Install directly from [Firefox Browser Add-ons](https://addons.mozilla.org/en-US/firefox/addon/claude-token-counter).
+2. Or download the latest `claude-token-counter-firefox-*.zip` from the [Releases](../../releases) page and drag it into any Firefox window, then click **Add**.
 
 **Userscript (Tampermonkey / Greasemonkey)**
 1. Install the userscript by downloading `claude-token-counter-userscript-*.js` from the [Releases](../../releases) page.
 
 ## How it works
 
-- Intercepts Claude's API responses to read conversation data and usage info
-- Uses a vendored tokenizer (`o200k_base`) for approximate token counting
-- Uses Claude’s `/usage` plus live SSE `message_limit` data; the SSE provides exact, unrounded utilization fractions, so the progress bars are more accurate than the rounded percentages shown on Claude’s native /usage page
-- Watches for DOM changes to inject UI elements as you navigate
+The extension has two halves that run in two different JavaScript worlds, because claude.ai's own page scripts and network requests aren't visible to a normal content script.
 
-## Privacy
+**1. The injected bridge (`src/injected/bridge.js`)**
 
-- All data stays local — no external servers, no tracking
-- Reads your `lastActiveOrg` cookie to query Claude's `/usage` endpoint
-- Makes requests only to `claude.ai`
+This script is injected directly into the page's own execution context (the "main world"), not the isolated content script sandbox. It patches three things on `window` before anything else on the page gets a chance to:
+
+- `window.fetch`: every request claude.ai makes passes through here first. The bridge inspects the URL and response of each call:
+  - POST requests to `/completion` or `/retry_completion` mark the start of a generation, which is used to show a "pending cache" state in the UI.
+  - Responses with an `event-stream` content type are read via a `ReadableStream` reader, line by line, watching for a `data: {"type":"message_limit", ...}` payload. This is the same server-sent event stream Claude's own UI uses to update usage in real time, so the extension reads the exact same unrounded utilization numbers.
+  - Responses to `/chat_conversations/{id}?tree=...` are cloned and parsed as JSON, giving the extension the full message tree for the active conversation.
+- `history.pushState` / `history.replaceState`: claude.ai is a single-page app, so navigating between conversations doesn't reload the page or fire a `popstate` event. The bridge wraps both methods to dispatch a custom `cc:urlchange` event whenever the app changes routes, which is how the extension knows to re-attach its UI and refetch data for the new conversation.
+
+Because the bridge runs in the page's own world, it can't call extension APIs like `chrome.runtime`, and the content script can't call anything the bridge defines. The only channel between them is `window.postMessage`, tagged with a `cc: 'ClaudeCounter'` marker and matched by request ID for request/response pairs (used for on-demand usage fetches and SHA-256 hashing) or broadcast as one-way events (used for the generation-start, conversation, and usage-limit signals above).
+
+**2. The content script (`src/content/*.js`)**
+
+Runs in the isolated content script world, declared in `manifest.json` against `https://claude.ai/*`. It's responsible for everything user-facing:
+
+- `bridge-client.js` injects `bridge.js` (via `chrome.runtime.getURL` / `browser.runtime.getURL`, whichever exists) as a `<script src="...">` tag so it runs in the main world, then listens for its `postMessage` events.
+- `main.js` orchestrates state: it tracks the current conversation ID (parsed from the URL path), the current org ID (read from the `lastActiveOrg` cookie), and reacts to the bridge's events by kicking off token recomputation or usage refreshes. A `MutationObserver`-based `waitForElement` helper waits for claude.ai's own DOM anchors (like the model selector dropdown) to appear before attaching UI, since the SPA re-renders on every navigation.
+- `tokens.js` turns a raw conversation payload into a token count. claude.ai stores every edit and every branch of a conversation in one flat `chat_messages` array; the extension walks backward from `current_leaf_message_uuid` via each message's `parent_message_uuid` to reconstruct just the active branch (the "trunk"). It strips out non-text content (thinking blocks, images, documents), serializes `tool_use`/`tool_result` blocks deterministically, and feeds the resulting text through a vendored `o200k_base` tokenizer (`src/vendor/o200k_base.js`), the same token encoding Claude uses internally, for an approximate but consistent count. A per-message cache (keyed by message UUID plus a length+hash fingerprint, hashed via the bridge's `crypto.subtle.digest` call) avoids re-tokenizing messages that haven't changed.
+- `ui.js` renders and updates the actual widgets: the token progress bar against the 200k context limit, the cache countdown (based on the last assistant message's timestamp plus a 5 minute cache window), and the session/weekly usage bars.
+
+**3. Usage bars specifically**
+
+Usage numbers come from two sources that the extension reconciles:
+
+- A REST call to `/api/organizations/{orgId}/usage`, fetched on demand through the bridge, which returns rounded `five_hour` and `seven_day` utilization percentages plus their reset timestamps.
+- The live SSE `message_limit` event described above, which carries the same data as unrounded fractions, so it's more precise than what claude.ai's own `/usage` page displays.
+
+A one-second interval (`tick()` in `main.js`) keeps the countdowns moving, triggers an automatic refresh right after either window rolls over, and does a once-an-hour safety refetch if neither the SSE stream nor a manual refresh has updated the numbers recently.
+
+Nothing here talks to any server other than claude.ai itself. There's no analytics, no telemetry, and no third-party network calls; all computation (tokenizing, hashing, caching) happens locally in the browser.
 
 ## Credits
 
 - Forked from [she-llac/claude-counter](https://github.com/she-llac/claude-counter)
 - Token counting via [gpt-tokenizer](https://github.com/niieani/gpt-tokenizer) (MIT)
 - Inspired by [Claude Usage Tracker](https://github.com/lugia19/Claude-Usage-Extension) by lugia19
-
-## License
-
-MIT

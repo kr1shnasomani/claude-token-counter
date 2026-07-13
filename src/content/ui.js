@@ -104,8 +104,8 @@
 			this.headerDisplay = null;
 			this.lengthGroup = null;
 			this.lengthDisplay = null;
+			this.lengthValueSpan = null;
 			this.cachedDisplay = null;
-			this.lengthBar = null;
 			this.lengthTooltip = null;
 			this.lastCachedUntilMs = null;
 			this.pendingCache = false;
@@ -139,7 +139,8 @@
 				strokeColor: isDark ? CC.COLORS.PROGRESS_OUTLINE_DARK : CC.COLORS.PROGRESS_OUTLINE_LIGHT,
 				fillColor: isDark ? CC.COLORS.PROGRESS_FILL_DARK : CC.COLORS.PROGRESS_FILL_LIGHT,
 				markerColor: isDark ? CC.COLORS.PROGRESS_MARKER_DARK : CC.COLORS.PROGRESS_MARKER_LIGHT,
-				boldColor: isDark ? CC.COLORS.BOLD_DARK : CC.COLORS.BOLD_LIGHT
+				boldColor: isDark ? CC.COLORS.BOLD_DARK : CC.COLORS.BOLD_LIGHT,
+				cacheActiveColor: isDark ? CC.COLORS.CACHE_ACTIVE_DARK : CC.COLORS.CACHE_ACTIVE_LIGHT
 			};
 		}
 
@@ -155,10 +156,10 @@
 				bar.style.setProperty('--cc-marker', markerColor);
 			};
 
-			applyBarChrome(this.lengthBar, { fillCaution: fillColor, fillWarn: fillColor });
 			applyBarChrome(this.sessionBar, { fillCaution: CC.COLORS.AMBER_WARNING, fillWarn: CC.COLORS.RED_WARNING });
 			applyBarChrome(this.weeklyBar, { fillCaution: CC.COLORS.AMBER_WARNING, fillWarn: CC.COLORS.RED_WARNING });
 			if (this.refreshBtn) this.refreshBtn.style.color = boldColor;
+			if (this.lengthValueSpan) this.lengthValueSpan.style.color = boldColor;
 		}
 
 		initialize() {
@@ -293,7 +294,7 @@
 
 		_setupTooltips() {
 			this.lengthTooltip = makeTooltip(
-				"Approximate tokens (excludes system prompt).\nUses a generic tokenizer, may differ from Claude's count.\nBecomes invalid after context compaction.\nBar scale: 200k tokens (Claude's maximum context length, will compact before then)."
+				"Approximate tokens (excludes system prompt).\nUses a generic tokenizer, may differ from Claude's count.\nBecomes invalid after context compaction.\nMax context: Sonnet 5 1M · Opus 4.8 500K · other models 200K (paid plans). Free plan: 200K (Haiku & Sonnet only)."
 			);
 			setupTooltip(
 				this.lengthGroup,
@@ -376,10 +377,19 @@
 				if (pending) {
 					this.cacheTimeSpan.style.color = '';
 				} else {
-					const { boldColor } = this.getProgressChrome();
-					this.cacheTimeSpan.style.color = boldColor;
+					const { cacheActiveColor } = this.getProgressChrome();
+					this.cacheTimeSpan.style.color = cacheActiveColor;
 				}
 			}
+		}
+
+		_renderIdleCache() {
+			this.cacheTimeSpan = Object.assign(document.createElement('span'), {
+				className: 'cc-cacheTime',
+				textContent: '-:--'
+			});
+			this.cacheTimeSpan.style.color = '';
+			this.cachedDisplay.replaceChildren(document.createTextNode('Cached Context Timer:\u00A0'), this.cacheTimeSpan);
 		}
 
 		setConversationMetrics({ totalTokens, cachedUntil } = {}) {
@@ -387,59 +397,35 @@
 
 			if (typeof totalTokens !== 'number') {
 				this.lengthDisplay.textContent = '';
+				this.lengthValueSpan = null;
 				this.cachedDisplay.textContent = '';
 				this.lastCachedUntilMs = null;
 				this._renderHeader();
 				return;
 			}
 
-			const pct = Math.max(0, Math.min(100, (totalTokens / CC.CONST.CONTEXT_LIMIT_TOKENS) * 100));
-			this.lengthDisplay.textContent = `~${totalTokens.toLocaleString()} tokens`;
-
-			// Mini bar (hide when full - context is definitely compacted by then)
-			const isFull = pct >= 99.5;
-			if (isFull) {
-				this.lengthDisplay.style.opacity = '0.5';
-				this.lengthBar = null;
-				this.lengthGroup.replaceChildren(this.lengthDisplay);
-				if (this.lengthTooltip) {
-					this.lengthTooltip.textContent =
-						"Approximate tokens (excludes system prompt).\nUses a generic tokenizer, may differ from Claude's count.\nThis count is invalid after compaction.";
-				}
-			} else {
-				this.lengthDisplay.style.opacity = '';
-				const bar = document.createElement('div');
-				bar.className = 'cc-bar cc-bar--mini';
-				this.lengthBar = bar;
-				const fill = document.createElement('div');
-				fill.className = 'cc-bar__fill';
-				fill.style.width = `${pct}%`;
-				bar.appendChild(fill);
-				this.refreshProgressChrome();
-
-				const barContainer = document.createElement('span');
-				barContainer.className = 'inline-flex items-center';
-				barContainer.appendChild(bar);
-
-				this.lengthGroup.replaceChildren(this.lengthDisplay, document.createTextNode('\u00A0\u00A0'), barContainer);
-			}
+			this.lengthValueSpan = Object.assign(document.createElement('span'), {
+				textContent: `~${totalTokens.toLocaleString()} tokens`
+			});
+			this.lengthValueSpan.style.color = this.getProgressChrome().boldColor;
+			this.lengthDisplay.replaceChildren(document.createTextNode('Token Counter: '), this.lengthValueSpan);
+			this.lengthGroup.replaceChildren(this.lengthDisplay);
 
 			// Cache timer
 			const now = Date.now();
 			if (typeof cachedUntil === 'number' && cachedUntil > now) {
 				this.lastCachedUntilMs = cachedUntil;
 				const secondsLeft = Math.max(0, Math.ceil((cachedUntil - now) / 1000));
-				const { boldColor } = this.getProgressChrome();
+				const { cacheActiveColor } = this.getProgressChrome();
 				this.cacheTimeSpan = Object.assign(document.createElement('span'), {
 					className: 'cc-cacheTime',
 					textContent: formatSeconds(secondsLeft)
 				});
-				this.cacheTimeSpan.style.color = boldColor;
-				this.cachedDisplay.replaceChildren(document.createTextNode('cached for\u00A0'), this.cacheTimeSpan);
+				this.cacheTimeSpan.style.color = cacheActiveColor;
+				this.cachedDisplay.replaceChildren(document.createTextNode('Cached Context Timer:\u00A0'), this.cacheTimeSpan);
 			} else {
 				this.lastCachedUntilMs = null;
-				this.cacheTimeSpan = null;
-				this.cachedDisplay.textContent = '';
+				this._renderIdleCache();
 			}
 
 			this._renderHeader();
@@ -454,10 +440,9 @@
 			if (!hasTokens) return;
 
 			if (hasCache) {
-				const gap = this.lengthBar ? '\u00A0\u00A0' : '\u00A0';
 				this.headerDisplay.replaceChildren(
 					this.lengthGroup,
-					document.createTextNode(gap),
+					document.createTextNode('\u00A0|\u00A0'),
 					this.cachedDisplay
 				);
 			} else {
@@ -565,9 +550,8 @@
 				}
 			} else if (this.lastCachedUntilMs && this.lastCachedUntilMs <= now) {
 				this.lastCachedUntilMs = null;
-				this.cacheTimeSpan = null;
 				this.pendingCache = false;
-				this.cachedDisplay.textContent = '';
+				this._renderIdleCache();
 				this._renderHeader();
 			}
 

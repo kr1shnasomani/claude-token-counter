@@ -11,8 +11,7 @@
 	});
 
 	CC.CONST = Object.freeze({
-		CACHE_WINDOW_MS: 5 * 60 * 1000,
-		CONTEXT_LIMIT_TOKENS: 200000
+		CACHE_WINDOW_MS: 5 * 60 * 1000
 	});
 
 	CC.COLORS = Object.freeze({
@@ -25,6 +24,8 @@
 		AMBER_WARNING: '#F0B544',
 		RED_WARNING: '#ce2029',
 		BOLD_LIGHT: '#141413',
-		BOLD_DARK: '#faf9f5'
+		BOLD_DARK: '#faf9f5',
+		CACHE_ACTIVE_DARK: '#3fb950',
+		CACHE_ACTIVE_LIGHT: '#1a7f37'
 	});
 })();

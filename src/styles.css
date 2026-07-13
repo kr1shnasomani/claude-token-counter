@@ -93,12 +93,6 @@
 	pointer-events: none;
 }
 
-.cc-bar--mini {
-	width: 60px;
-	height: 7px;
-	--cc-radius: 2px;
-}
-
 .cc-bar--usage {
 	height: 10px;
 	flex: 1;
