@@ -206,5 +206,5 @@
 		};
 	}
 
-	CC.tokens = { computeConversationMetrics };
+	CC.tokens = { computeConversationMetrics, buildTrunk };
 })();

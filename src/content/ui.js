@@ -97,8 +97,13 @@
 	}
 
 	class CounterUI {
-		constructor({ onUsageRefresh } = {}) {
+		constructor({ onUsageRefresh, onExport } = {}) {
 			this.onUsageRefresh = onUsageRefresh || null;
+			this.onExport = onExport || null;
+
+			this.exportBtn = null;
+			this.exportMenu = null;
+			this.exportingChat = false;
 
 			this.headerContainer = null;
 			this.headerDisplay = null;
@@ -109,6 +114,7 @@
 			this.lengthTooltip = null;
 			this.lastCachedUntilMs = null;
 			this.pendingCache = false;
+			this.pendingCacheTimeoutId = null;
 
 			this.usageLine = null;
 			this.sessionUsageSpan = null;
@@ -159,6 +165,7 @@
 			applyBarChrome(this.sessionBar, { fillCaution: CC.COLORS.AMBER_WARNING, fillWarn: CC.COLORS.RED_WARNING });
 			applyBarChrome(this.weeklyBar, { fillCaution: CC.COLORS.AMBER_WARNING, fillWarn: CC.COLORS.RED_WARNING });
 			if (this.refreshBtn) this.refreshBtn.style.color = boldColor;
+			if (this.exportBtn) this.exportBtn.style.color = boldColor;
 			if (this.lengthValueSpan) this.lengthValueSpan.style.color = boldColor;
 		}
 
@@ -180,6 +187,7 @@
 
 			// Usage line (session + weekly)
 			this._initUsageLine();
+			this._initExportButton();
 
 			this._setupTooltips();
 			this._observeDom();
@@ -203,7 +211,7 @@
 
 				if (usageMissing && !usageReattachPending) {
 					usageReattachPending = true;
-					CC.waitForElement(CC.DOM.MODEL_SELECTOR_DROPDOWN, 60000).then((el) => {
+					CC.waitForElement(CC.DOM.CHAT_INPUT, 60000).then((el) => {
 						usageReattachPending = false;
 						if (el) this.attachUsageLine();
 					});
@@ -292,6 +300,79 @@
 			});
 		}
 
+		_initExportButton() {
+			this.exportBtn = document.createElement('button');
+			this.exportBtn.className = 'cc-exportBtn';
+			this.exportBtn.setAttribute('aria-label', 'Export conversation');
+			this.exportBtn.setAttribute('aria-haspopup', 'menu');
+			this.exportBtn.innerHTML =
+				'<svg class="cc-exportIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" width="11" height="11" aria-hidden="true">' +
+				'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>' +
+				'<polyline points="7 10 12 15 17 10"/>' +
+				'<line x1="12" y1="15" x2="12" y2="3"/>' +
+				'</svg>';
+
+			this.exportMenu = document.createElement('div');
+			this.exportMenu.className = 'bg-bg-200 text-text-100 border-border-300 cc-exportMenu cc-hidden';
+			this.exportMenu.setAttribute('role', 'menu');
+
+			for (const [format, label] of [['md', 'Markdown (.md)'], ['txt', 'Plain text (.txt)']]) {
+				const item = document.createElement('button');
+				item.className = 'cc-exportMenuItem';
+				item.setAttribute('role', 'menuitem');
+				item.textContent = label;
+				item.addEventListener('click', (e) => {
+					e.stopPropagation();
+					this._closeExportMenu();
+					this._runExport(format);
+				});
+				this.exportMenu.appendChild(item);
+			}
+			document.body.appendChild(this.exportMenu);
+
+			this.exportBtn.addEventListener('click', (e) => {
+				e.stopPropagation();
+				if (this.exportMenu.classList.contains('cc-hidden')) this._openExportMenu();
+				else this._closeExportMenu();
+			});
+
+			document.addEventListener('click', () => this._closeExportMenu());
+			document.addEventListener('keydown', (e) => {
+				if (e.key === 'Escape') this._closeExportMenu();
+			});
+		}
+
+		_openExportMenu() {
+			const rect = this.exportBtn.getBoundingClientRect();
+			this.exportMenu.classList.remove('cc-hidden');
+			const menuRect = this.exportMenu.getBoundingClientRect();
+			let left = rect.left;
+			if (left + menuRect.width > window.innerWidth - 8) left = window.innerWidth - menuRect.width - 8;
+			this.exportMenu.style.left = `${Math.max(8, left)}px`;
+			this.exportMenu.style.top = `${rect.bottom + 6}px`;
+		}
+
+		_closeExportMenu() {
+			this.exportMenu?.classList.add('cc-hidden');
+		}
+
+		async _runExport(format) {
+			if (!this.onExport || this.exportingChat) return;
+			this.exportingChat = true;
+			this.exportBtn.classList.add('cc-exportBtn--busy');
+			try {
+				await this.onExport(format);
+			} catch {
+				// An explicit click that silently does nothing is worse than a wrong
+				// answer, so flash the button rather than failing invisibly.
+				this.exportBtn.classList.add('cc-exportBtn--error');
+				setTimeout(() => this.exportBtn?.classList.remove('cc-exportBtn--error'), 2000);
+			} finally {
+				this.exportBtn.classList.remove('cc-exportBtn--busy');
+				this.exportingChat = false;
+			}
+		}
+
 		_setupTooltips() {
 			this.lengthTooltip = makeTooltip(
 				"Approximate tokens (excludes system prompt).\nUses a generic tokenizer, may differ from Claude's count.\nBecomes invalid after context compaction.\nMax context: Sonnet 5 1M · Opus 4.8 500K · other models 200K (paid plans). Free plan: 200K (Haiku & Sonnet only)."
@@ -299,6 +380,12 @@
 			setupTooltip(
 				this.lengthGroup,
 				this.lengthTooltip,
+				{ topOffset: 8 }
+			);
+
+			setupTooltip(
+				this.exportBtn,
+				makeTooltip('Export this conversation as Markdown or plain text.\nActive branch only - edited-away versions are not included.'),
 				{ topOffset: 8 }
 			);
 
@@ -340,65 +427,73 @@
 
 		attachUsageLine() {
 			if (!this.usageLine) return;
-			const modelSelector = document.querySelector(CC.DOM.MODEL_SELECTOR_DROPDOWN);
-			if (!modelSelector) return;
-			const gridContainer = modelSelector.closest('[data-testid="chat-input-grid-container"]');
-			const gridArea = modelSelector.closest('[data-testid="chat-input-grid-area"]');
-			const findToolbarRow = (el, stopAt) => {
-				let cur = el;
-				while (cur && cur !== document.body) {
-					if (stopAt && cur === stopAt) break;
-					if (cur !== el && cur.nodeType === 1) {
-						const style = window.getComputedStyle(cur);
-						if (style.display === 'flex' && style.flexDirection === 'row') {
-							const buttons = cur.querySelectorAll('button').length;
-							if (buttons > 1) return cur;
-						}
-					}
-					cur = cur.parentElement;
-				}
-				return null;
-			};
 
-			const toolbarRow =
-				(gridContainer ? findToolbarRow(modelSelector, gridArea || gridContainer) : null) ||
-				findToolbarRow(modelSelector) ||
-				modelSelector.parentElement?.parentElement?.parentElement;
-			if (!toolbarRow) return;
-			if (toolbarRow.nextElementSibling !== this.usageLine) {
-				toolbarRow.after(this.usageLine);
+			// The rounded card around the text input is the one stable landmark in the
+			// composer, and the only container that keeps the row visually inside the
+			// composer on both layouts. Anchor on it instead of guessing at a "toolbar
+			// row": the toolbar controls are absolutely positioned (home page) or sit
+			// outside the card entirely (chat page), so anchoring on them either
+			// overlaps them or drops the row below the composer, against the viewport
+			// edge.
+			const card = document.querySelector(CC.DOM.CHAT_INPUT)?.closest(CC.DOM.COMPOSER_CARD);
+			if (!card) return;
+
+			// The card is a flex column, so appending puts the row on its own full-width
+			// line below the input, inside the card's padding box.
+			if (card.lastElementChild !== this.usageLine) {
+				card.appendChild(this.usageLine);
 			}
 			this.refreshProgressChrome();
 		}
 
 		setPendingCache(pending) {
 			this.pendingCache = pending;
-			if (this.cacheTimeSpan) {
-				if (pending) {
-					this.cacheTimeSpan.style.color = '';
-				} else {
-					const { cacheActiveColor } = this.getProgressChrome();
-					this.cacheTimeSpan.style.color = cacheActiveColor;
-				}
+			clearTimeout(this.pendingCacheTimeoutId);
+			this.pendingCacheTimeoutId = null;
+			if (!pending) return;
+
+			// A live countdown keeps running - it jumps to the new window when the
+			// refreshed conversation lands. Only show the placeholder when the timer is
+			// hidden, so it doesn't pop in from nothing a few seconds later.
+			if (!this.lastCachedUntilMs) {
+				this._renderCache('-:--', '');
+				this._renderHeader();
 			}
+
+			// A stopped or failed generation never produces a refreshed conversation,
+			// so without this the placeholder would sit there indefinitely.
+			this.pendingCacheTimeoutId = setTimeout(() => {
+				this.pendingCacheTimeoutId = null;
+				if (!this.pendingCache || this.lastCachedUntilMs) return;
+				this.pendingCache = false;
+				this._clearCache();
+				this._renderHeader();
+			}, CC.CONST.PENDING_CACHE_TIMEOUT_MS);
 		}
 
-		_renderIdleCache() {
+		_renderCache(text, color) {
 			this.cacheTimeSpan = Object.assign(document.createElement('span'), {
 				className: 'cc-cacheTime',
-				textContent: '-:--'
+				textContent: text
 			});
-			this.cacheTimeSpan.style.color = '';
+			this.cacheTimeSpan.style.color = color;
 			this.cachedDisplay.replaceChildren(document.createTextNode('Cached Context Timer:\u00A0'), this.cacheTimeSpan);
+		}
+
+		_clearCache() {
+			this.cacheTimeSpan = null;
+			this.cachedDisplay.textContent = '';
 		}
 
 		setConversationMetrics({ totalTokens, cachedUntil } = {}) {
 			this.pendingCache = false;
+			clearTimeout(this.pendingCacheTimeoutId);
+			this.pendingCacheTimeoutId = null;
 
 			if (typeof totalTokens !== 'number') {
 				this.lengthDisplay.textContent = '';
 				this.lengthValueSpan = null;
-				this.cachedDisplay.textContent = '';
+				this._clearCache();
 				this.lastCachedUntilMs = null;
 				this._renderHeader();
 				return;
@@ -411,21 +506,15 @@
 			this.lengthDisplay.replaceChildren(document.createTextNode('Token Counter: '), this.lengthValueSpan);
 			this.lengthGroup.replaceChildren(this.lengthDisplay);
 
-			// Cache timer
+			// Cache timer: only present while the context is actually cached.
 			const now = Date.now();
 			if (typeof cachedUntil === 'number' && cachedUntil > now) {
 				this.lastCachedUntilMs = cachedUntil;
 				const secondsLeft = Math.max(0, Math.ceil((cachedUntil - now) / 1000));
-				const { cacheActiveColor } = this.getProgressChrome();
-				this.cacheTimeSpan = Object.assign(document.createElement('span'), {
-					className: 'cc-cacheTime',
-					textContent: formatSeconds(secondsLeft)
-				});
-				this.cacheTimeSpan.style.color = cacheActiveColor;
-				this.cachedDisplay.replaceChildren(document.createTextNode('Cached Context Timer:\u00A0'), this.cacheTimeSpan);
+				this._renderCache(formatSeconds(secondsLeft), this.getProgressChrome().cacheActiveColor);
 			} else {
 				this.lastCachedUntilMs = null;
-				this._renderIdleCache();
+				this._clearCache();
 			}
 
 			this._renderHeader();
@@ -450,6 +539,7 @@
 			}
 
 			this.headerContainer.appendChild(this.headerDisplay);
+			if (this.exportBtn) this.headerContainer.appendChild(this.exportBtn);
 		}
 
 		setUsage(usage) {
@@ -549,9 +639,14 @@
 					this.cacheTimeSpan.textContent = formatSeconds(secondsLeft);
 				}
 			} else if (this.lastCachedUntilMs && this.lastCachedUntilMs <= now) {
+				// Window closed: drop the timer and its separator entirely, unless a
+				// generation is in flight and is about to open a new window.
 				this.lastCachedUntilMs = null;
-				this.pendingCache = false;
-				this._renderIdleCache();
+				if (this.pendingCache) {
+					this._renderCache('-:--', '');
+				} else {
+					this._clearCache();
+				}
 				this._renderHeader();
 			}
 

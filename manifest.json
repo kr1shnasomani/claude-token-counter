@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Claude Token Counter",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "browser_specific_settings": {
     "gecko": {
       "id": "{1ee7e9bc-8d77-4598-a99b-917e2ca6e0ae}",
@@ -37,6 +37,7 @@
         "src/content/bridge-client.js",
         "src/vendor/o200k_base.js",
         "src/content/tokens.js",
+        "src/content/export.js",
         "src/content/ui.js",
         "src/content/main.js"
       ]

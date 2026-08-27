@@ -1,5 +1,8 @@
-/* Header: tokens + cache timer */
+/* Header: tokens + cache timer + export */
 .cc-header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
 	margin-top: 2px;
 	user-select: none;
 }
@@ -11,6 +14,9 @@
 /* Usage row: session + weekly */
 .cc-usageRow {
 	position: relative;
+	box-sizing: border-box;
+	margin-top: 4px;
+	padding-inline: 8px;
 	z-index: 50;
 	user-select: none;
 	transition: opacity 150ms ease;
@@ -149,6 +155,68 @@
 
 .cc-refreshBtn--spinning .cc-refreshIcon {
 	animation: cc-spin 0.7s linear infinite;
+}
+
+/* Export button + format menu */
+.cc-exportBtn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+	padding: 2px;
+	background: none;
+	border: none;
+	cursor: pointer;
+	opacity: 0.45;
+	transition: opacity 150ms ease;
+	border-radius: 3px;
+}
+
+.cc-exportBtn:hover {
+	opacity: 0.9;
+}
+
+.cc-exportBtn--busy {
+	opacity: 0.35;
+	pointer-events: none;
+}
+
+.cc-exportBtn--error {
+	color: #ce2029 !important;
+	opacity: 1;
+}
+
+.cc-exportMenu {
+	position: fixed;
+	z-index: 9999;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 150px;
+	padding: 4px;
+	border-radius: 8px;
+	border-width: 1px;
+	border-style: solid;
+	box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
+	user-select: none;
+}
+
+.cc-exportMenuItem {
+	appearance: none;
+	background: none;
+	border: none;
+	color: inherit;
+	font: inherit;
+	font-size: 12px;
+	text-align: left;
+	white-space: nowrap;
+	padding: 6px 10px;
+	border-radius: 5px;
+	cursor: pointer;
+}
+
+.cc-exportMenuItem:hover {
+	background: rgb(127 127 127 / 0.18);
 }
 
 /* Hide optional elements completely (no layout space) */

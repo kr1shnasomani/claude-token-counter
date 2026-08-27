@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Counter
 // @namespace    https://github.com/she-llac/claude-counter
-// @version      1.0.5-userscript
+// @version      1.0.6-userscript
 // @description  Shows token count, cache timer, and usage bars on claude.ai.
 // @match        https://claude.ai/*
 // @run-at       document-start
@@ -150,15 +150,16 @@
 	const CC = (globalThis.ClaudeCounter = globalThis.ClaudeCounter || {});
 
 	CC.DOM = Object.freeze({
-		CHAT_MENU_TRIGGER: '[data-testid="chat-menu-trigger"]',
-		MODEL_SELECTOR_DROPDOWN: '[data-testid="model-selector-dropdown"]',
+		CHAT_MENU_TRIGGER: '[data-testid="chat-title-split"]',
+		CHAT_INPUT: '[data-testid="chat-input"]',
+		COMPOSER_CARD: '[class*="rounded-composer"]',
 		CHAT_PROJECT_WRAPPER: '.chat-project-wrapper',
 		BRIDGE_SCRIPT_ID: 'cc-bridge-script'
 	});
 
 	CC.CONST = Object.freeze({
 		CACHE_WINDOW_MS: 5 * 60 * 1000,
-		CONTEXT_LIMIT_TOKENS: 200000
+		PENDING_CACHE_TIMEOUT_MS: 60 * 1000
 	});
 
 	CC.COLORS = Object.freeze({
@@ -171,7 +172,9 @@
 		AMBER_WARNING: '#F0B544',
 		RED_WARNING: '#ce2029',
 		BOLD_LIGHT: '#141413',
-		BOLD_DARK: '#faf9f5'
+		BOLD_DARK: '#faf9f5',
+		CACHE_ACTIVE_DARK: '#3fb950',
+		CACHE_ACTIVE_LIGHT: '#1a7f37'
 	});
 })();
 
@@ -387,7 +390,325 @@
 		};
 	}
 
-	CC.tokens = { computeConversationMetrics };
+	CC.tokens = { computeConversationMetrics, buildTrunk };
+})();
+
+
+
+(() => {
+	'use strict';
+
+	const CC = (globalThis.ClaudeCounter = globalThis.ClaudeCounter || {});
+
+	const SENDER_LABEL = { human: 'You', assistant: 'Claude' };
+
+	// Tools whose payload is a document the user asked for, rather than plumbing.
+	const FILE_TOOLS = new Set(['create_file', 'artifacts']);
+
+	const FENCE_LANG = {
+		md: 'markdown', markdown: 'markdown', txt: '', text: '',
+		js: 'javascript', mjs: 'javascript', ts: 'typescript', tsx: 'tsx', jsx: 'jsx',
+		py: 'python', rb: 'ruby', go: 'go', rs: 'rust', java: 'java', sh: 'bash',
+		html: 'html', css: 'css', json: 'json', yaml: 'yaml', yml: 'yaml',
+		csv: 'csv', sql: 'sql', xml: 'xml'
+	};
+
+	function basename(path) {
+		if (typeof path !== 'string') return '';
+		const parts = path.split('/');
+		return parts[parts.length - 1] || path;
+	}
+
+	function fenceLanguage(name) {
+		const ext = (name.split('.').pop() || '').toLowerCase();
+		return FENCE_LANG[ext] ?? '';
+	}
+
+	/** A fence long enough to survive backticks inside the content. */
+	function fenceFor(text) {
+		let longest = 0;
+		for (const run of String(text).match(/`+/g) || []) longest = Math.max(longest, run.length);
+		return '`'.repeat(Math.max(3, longest + 1));
+	}
+
+	function formatBytes(bytes) {
+		if (typeof bytes !== 'number' || !Number.isFinite(bytes)) return '';
+		if (bytes < 1024) return `${bytes} B`;
+		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+		return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+	}
+
+	function formatDateTime(value) {
+		const ms = typeof value === 'number' ? value : Date.parse(value);
+		if (!Number.isFinite(ms)) return '';
+		return new Date(ms).toLocaleString(undefined, {
+			day: 'numeric', month: 'short', year: 'numeric',
+			hour: '2-digit', minute: '2-digit'
+		});
+	}
+
+	function slugify(name) {
+		const base = String(name || 'claude-conversation')
+			.toLowerCase()
+			.replace(/[^a-z0-9]+/g, '-')
+			.replace(/^-+|-+$/g, '')
+			.slice(0, 60);
+		return base || 'claude-conversation';
+	}
+
+	/** A tool_use block that produced a document, or null. */
+	function asGeneratedFile(item) {
+		if (item?.type !== 'tool_use' || !FILE_TOOLS.has(item.name)) return null;
+		const input = item.input || {};
+
+		// Newer file-based flow.
+		if (typeof input.file_text === 'string') {
+			return { name: basename(input.path) || 'untitled', text: input.file_text };
+		}
+		// Classic artifacts tool.
+		if (typeof input.content === 'string' && input.command !== 'delete') {
+			return { name: input.title || input.id || 'artifact', text: input.content, lang: input.language };
+		}
+		return null;
+	}
+
+	/** Apply one str_replace edit. Literal match on the first occurrence only. */
+	function applyEdit(text, oldStr, newStr) {
+		if (typeof text !== 'string' || typeof oldStr !== 'string') return null;
+		const at = text.indexOf(oldStr);
+		if (at === -1) return null;
+		return text.slice(0, at) + (typeof newStr === 'string' ? newStr : '') + text.slice(at + oldStr.length);
+	}
+
+	/**
+	 * Walk the whole trunk once and replay every file edit, so a generated file is
+	 * exported as it ended up rather than as it was first written. A file can be
+	 * created once and then edited many times across later turns.
+	 */
+	function replayFiles(trunk) {
+		const byPath = new Map();
+		const orphans = new Set();
+
+		for (const message of trunk) {
+			for (const item of Array.isArray(message?.content) ? message.content : []) {
+				if (item?.type !== 'tool_use') continue;
+				const input = item.input || {};
+
+				if (FILE_TOOLS.has(item.name)) {
+					const file = asGeneratedFile(item);
+					if (file && typeof input.path === 'string') {
+						byPath.set(input.path, { text: file.text, edits: 0, failed: 0 });
+					}
+					continue;
+				}
+
+				if (item.name === 'str_replace' && typeof input.path === 'string') {
+					const state = byPath.get(input.path);
+					if (!state) {
+						// Created outside this transcript (a shell heredoc, an earlier
+						// branch): there is no base text to apply the edit to.
+						orphans.add(input.path);
+						continue;
+					}
+					const next = applyEdit(state.text, input.old_str, input.new_str);
+					if (next === null) state.failed += 1;
+					else {
+						state.text = next;
+						state.edits += 1;
+					}
+				}
+			}
+		}
+
+		return { byPath, orphans, noted: new Set() };
+	}
+
+	/**
+	 * Reduce one message to an ordered list of renderable blocks.
+	 * Tool plumbing collapses into a single summary rather than pages of JSON.
+	 */
+	function messageBlocks(message, options, files) {
+		const blocks = [];
+		const toolCounts = new Map();
+
+		for (const item of Array.isArray(message?.content) ? message.content : []) {
+			if (item?.type === 'text') {
+				if (typeof item.text === 'string' && item.text.trim()) blocks.push({ kind: 'text', text: item.text.trim() });
+				continue;
+			}
+			if (item?.type === 'thinking' || item?.type === 'redacted_thinking') {
+				if (options.includeThinking && typeof item.thinking === 'string' && item.thinking.trim()) {
+					blocks.push({ kind: 'thinking', text: item.thinking.trim() });
+				}
+				continue;
+			}
+			if (item?.type === 'tool_use') {
+				const file = asGeneratedFile(item);
+				if (file && options.includeFiles) {
+					const state = files?.byPath.get(item.input?.path);
+					blocks.push({ kind: 'file', ...file, ...(state ? { text: state.text, edits: state.edits, failed: state.failed } : {}) });
+					continue;
+				}
+				if (item.name === 'str_replace' && files) {
+					const path = item.input?.path;
+					if (path && files.orphans.has(path) && !files.noted.has(path)) {
+						files.noted.add(path);
+						blocks.push({ kind: 'orphanEdit', name: basename(path) });
+					}
+				}
+				if (item.name) toolCounts.set(item.name, (toolCounts.get(item.name) || 0) + 1);
+			}
+			// tool_result is the machine side of a call; the summary above covers it.
+		}
+
+		for (const a of Array.isArray(message?.attachments) ? message.attachments : []) {
+			blocks.push({
+				kind: 'attachment',
+				name: a?.file_name || `untitled.${a?.file_type || 'file'}`,
+				size: formatBytes(a?.file_size)
+			});
+		}
+		for (const f of Array.isArray(message?.files) ? message.files : []) {
+			blocks.push({ kind: 'media', name: f?.file_name || 'file', mediaKind: f?.file_kind || 'file' });
+		}
+
+		if (options.includeToolSummary && toolCounts.size) {
+			const parts = [...toolCounts].map(([name, n]) => (n > 1 ? `${name} ×${n}` : name));
+			blocks.push({ kind: 'tools', text: parts.join(', ') });
+		}
+
+		return blocks;
+	}
+
+	/** " (final version, 7 edits applied)" - so replayed content isn't mistaken for the original. */
+	function editNote(block, markdown) {
+		if (!block.edits) return '';
+		const parts = [`final version, ${block.edits} edit${block.edits === 1 ? '' : 's'} applied`];
+		if (block.failed) parts.push(`${block.failed} could not be applied`);
+		const text = `(${parts.join('; ')})`;
+		return markdown ? ` *${text}*` : ` ${text}`;
+	}
+
+	function defaultOptions(overrides) {
+		return {
+			includeThinking: false,
+			includeFiles: true,
+			includeToolSummary: true,
+			includeTimestamps: true,
+			...overrides
+		};
+	}
+
+	function buildMarkdown(conversation, overrides) {
+		const options = defaultOptions(overrides);
+		const trunk = CC.tokens.buildTrunk(conversation);
+		const files = replayFiles(trunk);
+		const title = conversation?.name || 'Claude conversation';
+		const out = [`# ${title}`, ''];
+
+		const meta = [`Exported ${formatDateTime(Date.now())}`, `${trunk.length} message${trunk.length === 1 ? '' : 's'}`];
+		if (conversation?.model) meta.push(conversation.model);
+		out.push(`*${meta.join(' · ')}*`, '');
+
+		for (const message of trunk) {
+			const who = SENDER_LABEL[message?.sender] || message?.sender || 'Unknown';
+			const when = options.includeTimestamps ? formatDateTime(message?.created_at) : '';
+			out.push('---', '');
+			out.push(when ? `## ${who} · ${when}` : `## ${who}`, '');
+
+			for (const block of messageBlocks(message, options, files)) {
+				if (block.kind === 'text') out.push(block.text, '');
+				else if (block.kind === 'thinking') out.push(`> **Thinking**`, ...block.text.split('\n').map((l) => `> ${l}`), '');
+				else if (block.kind === 'orphanEdit') {
+					out.push(`*\u{270F}\u{FE0F} Edited \`${block.name}\` - created outside this transcript, content unavailable.*`, '');
+				} else if (block.kind === 'file') {
+					const fence = fenceFor(block.text);
+					out.push(`**Generated file: \`${block.name}\`**${editNote(block, true)}`, '');
+					out.push(`${fence}${block.lang || fenceLanguage(block.name)}`, block.text, fence, '');
+				} else if (block.kind === 'attachment') {
+					out.push(`\u{1F4CE} *Attachment: ${block.name}${block.size ? ` (${block.size})` : ''}*`, '');
+				} else if (block.kind === 'media') {
+					out.push(`\u{1F5BC}️ *${block.mediaKind}: ${block.name}*`, '');
+				} else if (block.kind === 'tools') {
+					out.push(`*\u{1F527} Used: ${block.text}*`, '');
+				}
+			}
+		}
+
+		return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
+	}
+
+	function buildText(conversation, overrides) {
+		const options = defaultOptions(overrides);
+		const trunk = CC.tokens.buildTrunk(conversation);
+		const files = replayFiles(trunk);
+		const title = conversation?.name || 'Claude conversation';
+		const rule = '='.repeat(60);
+		const thin = '-'.repeat(60);
+
+		const meta = [`Exported ${formatDateTime(Date.now())}`, `${trunk.length} message${trunk.length === 1 ? '' : 's'}`];
+		if (conversation?.model) meta.push(conversation.model);
+		const out = [title, meta.join(' · '), rule, ''];
+
+		for (const message of trunk) {
+			const who = (SENDER_LABEL[message?.sender] || message?.sender || 'Unknown').toUpperCase();
+			const when = options.includeTimestamps ? formatDateTime(message?.created_at) : '';
+			out.push(when ? `${who}  (${when})` : who, thin);
+
+			for (const block of messageBlocks(message, options, files)) {
+				if (block.kind === 'text') out.push(block.text, '');
+				else if (block.kind === 'thinking') out.push('[thinking]', block.text, '');
+				else if (block.kind === 'orphanEdit') {
+					out.push(`[edited ${block.name} - created outside this transcript, content unavailable]`, '');
+				} else if (block.kind === 'file') {
+					out.push(`--- generated file: ${block.name}${editNote(block, false)} ---`, block.text, `--- end of ${block.name} ---`, '');
+				} else if (block.kind === 'attachment') {
+					out.push(`[attachment: ${block.name}${block.size ? ` (${block.size})` : ''}]`, '');
+				} else if (block.kind === 'media') {
+					out.push(`[${block.mediaKind}: ${block.name}]`, '');
+				} else if (block.kind === 'tools') {
+					out.push(`[used: ${block.text}]`, '');
+				}
+			}
+		}
+
+		return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
+	}
+
+	const FORMATS = {
+		md: { build: buildMarkdown, ext: 'md', mime: 'text/markdown' },
+		txt: { build: buildText, ext: 'txt', mime: 'text/plain' }
+	};
+
+	function buildFile(conversation, format, overrides) {
+		const spec = FORMATS[format] || FORMATS.md;
+		// Local date, not UTC: an evening export in a UTC+ timezone would otherwise be
+		// stamped with yesterday's date and disagree with the header inside the file.
+		const now = new Date();
+		const stamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+		return {
+			filename: `${slugify(conversation?.name)}-${stamp}.${spec.ext}`,
+			mime: spec.mime,
+			content: spec.build(conversation, overrides)
+		};
+	}
+
+	/** Hand the file to the browser. Uses a blob URL, so no `downloads` permission. */
+	function download(conversation, format, overrides) {
+		const file = buildFile(conversation, format, overrides);
+		const url = URL.createObjectURL(new Blob([file.content], { type: `${file.mime};charset=utf-8` }));
+		const link = document.createElement('a');
+		link.href = url;
+		link.download = file.filename;
+		link.style.display = 'none';
+		document.body.appendChild(link);
+		link.click();
+		link.remove();
+		setTimeout(() => URL.revokeObjectURL(url), 10000);
+		return file.filename;
+	}
+
+	CC.exportChat = { buildMarkdown, buildText, buildFile, download, slugify };
 })();
 
 
@@ -490,18 +811,24 @@
 	}
 
 	class CounterUI {
-		constructor({ onUsageRefresh } = {}) {
+		constructor({ onUsageRefresh, onExport } = {}) {
 			this.onUsageRefresh = onUsageRefresh || null;
+			this.onExport = onExport || null;
+
+			this.exportBtn = null;
+			this.exportMenu = null;
+			this.exportingChat = false;
 
 			this.headerContainer = null;
 			this.headerDisplay = null;
 			this.lengthGroup = null;
 			this.lengthDisplay = null;
+			this.lengthValueSpan = null;
 			this.cachedDisplay = null;
-			this.lengthBar = null;
 			this.lengthTooltip = null;
 			this.lastCachedUntilMs = null;
 			this.pendingCache = false;
+			this.pendingCacheTimeoutId = null;
 
 			this.usageLine = null;
 			this.sessionUsageSpan = null;
@@ -532,7 +859,8 @@
 				strokeColor: isDark ? CC.COLORS.PROGRESS_OUTLINE_DARK : CC.COLORS.PROGRESS_OUTLINE_LIGHT,
 				fillColor: isDark ? CC.COLORS.PROGRESS_FILL_DARK : CC.COLORS.PROGRESS_FILL_LIGHT,
 				markerColor: isDark ? CC.COLORS.PROGRESS_MARKER_DARK : CC.COLORS.PROGRESS_MARKER_LIGHT,
-				boldColor: isDark ? CC.COLORS.BOLD_DARK : CC.COLORS.BOLD_LIGHT
+				boldColor: isDark ? CC.COLORS.BOLD_DARK : CC.COLORS.BOLD_LIGHT,
+				cacheActiveColor: isDark ? CC.COLORS.CACHE_ACTIVE_DARK : CC.COLORS.CACHE_ACTIVE_LIGHT
 			};
 		}
 
@@ -548,10 +876,11 @@
 				bar.style.setProperty('--cc-marker', markerColor);
 			};
 
-			applyBarChrome(this.lengthBar, { fillCaution: fillColor, fillWarn: fillColor });
 			applyBarChrome(this.sessionBar, { fillCaution: CC.COLORS.AMBER_WARNING, fillWarn: CC.COLORS.RED_WARNING });
 			applyBarChrome(this.weeklyBar, { fillCaution: CC.COLORS.AMBER_WARNING, fillWarn: CC.COLORS.RED_WARNING });
 			if (this.refreshBtn) this.refreshBtn.style.color = boldColor;
+			if (this.exportBtn) this.exportBtn.style.color = boldColor;
+			if (this.lengthValueSpan) this.lengthValueSpan.style.color = boldColor;
 		}
 
 		initialize() {
@@ -572,6 +901,7 @@
 
 			// Usage line (session + weekly)
 			this._initUsageLine();
+			this._initExportButton();
 
 			this._setupTooltips();
 			this._observeDom();
@@ -595,7 +925,7 @@
 
 				if (usageMissing && !usageReattachPending) {
 					usageReattachPending = true;
-					CC.waitForElement(CC.DOM.MODEL_SELECTOR_DROPDOWN, 60000).then((el) => {
+					CC.waitForElement(CC.DOM.CHAT_INPUT, 60000).then((el) => {
 						usageReattachPending = false;
 						if (el) this.attachUsageLine();
 					});
@@ -684,13 +1014,92 @@
 			});
 		}
 
+		_initExportButton() {
+			this.exportBtn = document.createElement('button');
+			this.exportBtn.className = 'cc-exportBtn';
+			this.exportBtn.setAttribute('aria-label', 'Export conversation');
+			this.exportBtn.setAttribute('aria-haspopup', 'menu');
+			this.exportBtn.innerHTML =
+				'<svg class="cc-exportIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" width="11" height="11" aria-hidden="true">' +
+				'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>' +
+				'<polyline points="7 10 12 15 17 10"/>' +
+				'<line x1="12" y1="15" x2="12" y2="3"/>' +
+				'</svg>';
+
+			this.exportMenu = document.createElement('div');
+			this.exportMenu.className = 'bg-bg-200 text-text-100 border-border-300 cc-exportMenu cc-hidden';
+			this.exportMenu.setAttribute('role', 'menu');
+
+			for (const [format, label] of [['md', 'Markdown (.md)'], ['txt', 'Plain text (.txt)']]) {
+				const item = document.createElement('button');
+				item.className = 'cc-exportMenuItem';
+				item.setAttribute('role', 'menuitem');
+				item.textContent = label;
+				item.addEventListener('click', (e) => {
+					e.stopPropagation();
+					this._closeExportMenu();
+					this._runExport(format);
+				});
+				this.exportMenu.appendChild(item);
+			}
+			document.body.appendChild(this.exportMenu);
+
+			this.exportBtn.addEventListener('click', (e) => {
+				e.stopPropagation();
+				if (this.exportMenu.classList.contains('cc-hidden')) this._openExportMenu();
+				else this._closeExportMenu();
+			});
+
+			document.addEventListener('click', () => this._closeExportMenu());
+			document.addEventListener('keydown', (e) => {
+				if (e.key === 'Escape') this._closeExportMenu();
+			});
+		}
+
+		_openExportMenu() {
+			const rect = this.exportBtn.getBoundingClientRect();
+			this.exportMenu.classList.remove('cc-hidden');
+			const menuRect = this.exportMenu.getBoundingClientRect();
+			let left = rect.left;
+			if (left + menuRect.width > window.innerWidth - 8) left = window.innerWidth - menuRect.width - 8;
+			this.exportMenu.style.left = `${Math.max(8, left)}px`;
+			this.exportMenu.style.top = `${rect.bottom + 6}px`;
+		}
+
+		_closeExportMenu() {
+			this.exportMenu?.classList.add('cc-hidden');
+		}
+
+		async _runExport(format) {
+			if (!this.onExport || this.exportingChat) return;
+			this.exportingChat = true;
+			this.exportBtn.classList.add('cc-exportBtn--busy');
+			try {
+				await this.onExport(format);
+			} catch {
+				// An explicit click that silently does nothing is worse than a wrong
+				// answer, so flash the button rather than failing invisibly.
+				this.exportBtn.classList.add('cc-exportBtn--error');
+				setTimeout(() => this.exportBtn?.classList.remove('cc-exportBtn--error'), 2000);
+			} finally {
+				this.exportBtn.classList.remove('cc-exportBtn--busy');
+				this.exportingChat = false;
+			}
+		}
+
 		_setupTooltips() {
 			this.lengthTooltip = makeTooltip(
-				"Approximate tokens (excludes system prompt).\nUses a generic tokenizer, may differ from Claude's count.\nBecomes invalid after context compaction.\nBar scale: 200k tokens (Claude's maximum context length, will compact before then)."
+				"Approximate tokens (excludes system prompt).\nUses a generic tokenizer, may differ from Claude's count.\nBecomes invalid after context compaction.\nMax context: Sonnet 5 1M · Opus 4.8 500K · other models 200K (paid plans). Free plan: 200K (Haiku & Sonnet only)."
 			);
 			setupTooltip(
 				this.lengthGroup,
 				this.lengthTooltip,
+				{ topOffset: 8 }
+			);
+
+			setupTooltip(
+				this.exportBtn,
+				makeTooltip('Export this conversation as Markdown or plain text.\nActive branch only - edited-away versions are not included.'),
 				{ topOffset: 8 }
 			);
 
@@ -720,10 +1129,9 @@
 		}
 
 		attachHeader() {
-			const chatMenu = document.querySelector(CC.DOM.CHAT_MENU_TRIGGER);
-			if (!chatMenu) return;
-			const anchor = chatMenu.closest(CC.DOM.CHAT_PROJECT_WRAPPER) || chatMenu.parentElement;
+			const anchor = document.querySelector(CC.DOM.CHAT_MENU_TRIGGER);
 			if (!anchor) return;
+
 			if (anchor.nextElementSibling !== this.headerContainer) {
 				anchor.after(this.headerContainer);
 			}
@@ -733,107 +1141,94 @@
 
 		attachUsageLine() {
 			if (!this.usageLine) return;
-			const modelSelector = document.querySelector(CC.DOM.MODEL_SELECTOR_DROPDOWN);
-			if (!modelSelector) return;
-			const gridContainer = modelSelector.closest('[data-testid="chat-input-grid-container"]');
-			const gridArea = modelSelector.closest('[data-testid="chat-input-grid-area"]');
-			const findToolbarRow = (el, stopAt) => {
-				let cur = el;
-				while (cur && cur !== document.body) {
-					if (stopAt && cur === stopAt) break;
-					if (cur !== el && cur.nodeType === 1) {
-						const style = window.getComputedStyle(cur);
-						if (style.display === 'flex' && style.flexDirection === 'row') {
-							const buttons = cur.querySelectorAll('button').length;
-							if (buttons > 1) return cur;
-						}
-					}
-					cur = cur.parentElement;
-				}
-				return null;
-			};
 
-			const toolbarRow =
-				(gridContainer ? findToolbarRow(modelSelector, gridArea || gridContainer) : null) ||
-				findToolbarRow(modelSelector) ||
-				modelSelector.parentElement?.parentElement?.parentElement;
-			if (!toolbarRow) return;
-			if (toolbarRow.nextElementSibling !== this.usageLine) {
-				toolbarRow.after(this.usageLine);
+			// The rounded card around the text input is the one stable landmark in the
+			// composer, and the only container that keeps the row visually inside the
+			// composer on both layouts. Anchor on it instead of guessing at a "toolbar
+			// row": the toolbar controls are absolutely positioned (home page) or sit
+			// outside the card entirely (chat page), so anchoring on them either
+			// overlaps them or drops the row below the composer, against the viewport
+			// edge.
+			const card = document.querySelector(CC.DOM.CHAT_INPUT)?.closest(CC.DOM.COMPOSER_CARD);
+			if (!card) return;
+
+			// The card is a flex column, so appending puts the row on its own full-width
+			// line below the input, inside the card's padding box.
+			if (card.lastElementChild !== this.usageLine) {
+				card.appendChild(this.usageLine);
 			}
 			this.refreshProgressChrome();
 		}
 
 		setPendingCache(pending) {
 			this.pendingCache = pending;
-			if (this.cacheTimeSpan) {
-				if (pending) {
-					this.cacheTimeSpan.style.color = '';
-				} else {
-					const { boldColor } = this.getProgressChrome();
-					this.cacheTimeSpan.style.color = boldColor;
-				}
+			clearTimeout(this.pendingCacheTimeoutId);
+			this.pendingCacheTimeoutId = null;
+			if (!pending) return;
+
+			// A live countdown keeps running - it jumps to the new window when the
+			// refreshed conversation lands. Only show the placeholder when the timer is
+			// hidden, so it doesn't pop in from nothing a few seconds later.
+			if (!this.lastCachedUntilMs) {
+				this._renderCache('-:--', '');
+				this._renderHeader();
 			}
+
+			// A stopped or failed generation never produces a refreshed conversation,
+			// so without this the placeholder would sit there indefinitely.
+			this.pendingCacheTimeoutId = setTimeout(() => {
+				this.pendingCacheTimeoutId = null;
+				if (!this.pendingCache || this.lastCachedUntilMs) return;
+				this.pendingCache = false;
+				this._clearCache();
+				this._renderHeader();
+			}, CC.CONST.PENDING_CACHE_TIMEOUT_MS);
+		}
+
+		_renderCache(text, color) {
+			this.cacheTimeSpan = Object.assign(document.createElement('span'), {
+				className: 'cc-cacheTime',
+				textContent: text
+			});
+			this.cacheTimeSpan.style.color = color;
+			this.cachedDisplay.replaceChildren(document.createTextNode('Cached Context Timer:\u00A0'), this.cacheTimeSpan);
+		}
+
+		_clearCache() {
+			this.cacheTimeSpan = null;
+			this.cachedDisplay.textContent = '';
 		}
 
 		setConversationMetrics({ totalTokens, cachedUntil } = {}) {
 			this.pendingCache = false;
+			clearTimeout(this.pendingCacheTimeoutId);
+			this.pendingCacheTimeoutId = null;
 
 			if (typeof totalTokens !== 'number') {
 				this.lengthDisplay.textContent = '';
-				this.cachedDisplay.textContent = '';
+				this.lengthValueSpan = null;
+				this._clearCache();
 				this.lastCachedUntilMs = null;
 				this._renderHeader();
 				return;
 			}
 
-			const pct = Math.max(0, Math.min(100, (totalTokens / CC.CONST.CONTEXT_LIMIT_TOKENS) * 100));
-			this.lengthDisplay.textContent = `~${totalTokens.toLocaleString()} tokens`;
+			this.lengthValueSpan = Object.assign(document.createElement('span'), {
+				textContent: `~${totalTokens.toLocaleString()} tokens`
+			});
+			this.lengthValueSpan.style.color = this.getProgressChrome().boldColor;
+			this.lengthDisplay.replaceChildren(document.createTextNode('Token Counter: '), this.lengthValueSpan);
+			this.lengthGroup.replaceChildren(this.lengthDisplay);
 
-			// Mini bar (hide when full - context is definitely compacted by then)
-			const isFull = pct >= 99.5;
-			if (isFull) {
-				this.lengthDisplay.style.opacity = '0.5';
-				this.lengthBar = null;
-				this.lengthGroup.replaceChildren(this.lengthDisplay);
-				if (this.lengthTooltip) {
-					this.lengthTooltip.textContent =
-						"Approximate tokens (excludes system prompt).\nUses a generic tokenizer, may differ from Claude's count.\nThis count is invalid after compaction.";
-				}
-			} else {
-				this.lengthDisplay.style.opacity = '';
-				const bar = document.createElement('div');
-				bar.className = 'cc-bar cc-bar--mini';
-				this.lengthBar = bar;
-				const fill = document.createElement('div');
-				fill.className = 'cc-bar__fill';
-				fill.style.width = `${pct}%`;
-				bar.appendChild(fill);
-				this.refreshProgressChrome();
-
-				const barContainer = document.createElement('span');
-				barContainer.className = 'inline-flex items-center';
-				barContainer.appendChild(bar);
-
-				this.lengthGroup.replaceChildren(this.lengthDisplay, document.createTextNode('\u00A0\u00A0'), barContainer);
-			}
-
-			// Cache timer
+			// Cache timer: only present while the context is actually cached.
 			const now = Date.now();
 			if (typeof cachedUntil === 'number' && cachedUntil > now) {
 				this.lastCachedUntilMs = cachedUntil;
 				const secondsLeft = Math.max(0, Math.ceil((cachedUntil - now) / 1000));
-				const { boldColor } = this.getProgressChrome();
-				this.cacheTimeSpan = Object.assign(document.createElement('span'), {
-					className: 'cc-cacheTime',
-					textContent: formatSeconds(secondsLeft)
-				});
-				this.cacheTimeSpan.style.color = boldColor;
-				this.cachedDisplay.replaceChildren(document.createTextNode('cached for\u00A0'), this.cacheTimeSpan);
+				this._renderCache(formatSeconds(secondsLeft), this.getProgressChrome().cacheActiveColor);
 			} else {
 				this.lastCachedUntilMs = null;
-				this.cacheTimeSpan = null;
-				this.cachedDisplay.textContent = '';
+				this._clearCache();
 			}
 
 			this._renderHeader();
@@ -848,10 +1243,9 @@
 			if (!hasTokens) return;
 
 			if (hasCache) {
-				const gap = this.lengthBar ? '\u00A0\u00A0' : '\u00A0';
 				this.headerDisplay.replaceChildren(
 					this.lengthGroup,
-					document.createTextNode(gap),
+					document.createTextNode('\u00A0|\u00A0'),
 					this.cachedDisplay
 				);
 			} else {
@@ -859,6 +1253,7 @@
 			}
 
 			this.headerContainer.appendChild(this.headerDisplay);
+			if (this.exportBtn) this.headerContainer.appendChild(this.exportBtn);
 		}
 
 		setUsage(usage) {
@@ -958,10 +1353,14 @@
 					this.cacheTimeSpan.textContent = formatSeconds(secondsLeft);
 				}
 			} else if (this.lastCachedUntilMs && this.lastCachedUntilMs <= now) {
+				// Window closed: drop the timer and its separator entirely, unless a
+				// generation is in flight and is about to open a new window.
 				this.lastCachedUntilMs = null;
-				this.cacheTimeSpan = null;
-				this.pendingCache = false;
-				this.cachedDisplay.textContent = '';
+				if (this.pendingCache) {
+					this._renderCache('-:--', '');
+				} else {
+					this._clearCache();
+				}
 				this._renderHeader();
 			}
 
@@ -1000,7 +1399,7 @@
 	CC.__ccUserscriptStarted = true;
 
 	const STYLE_ID = 'cc-userscript-styles';
-	const STYLES = '/* Header: tokens + cache timer */\n.cc-header {\n\tmargin-top: 2px;\n\tuser-select: none;\n}\n\n.cc-headerItem {\n\twhite-space: nowrap;\n}\n\n/* Usage row: session + weekly */\n.cc-usageRow {\n\tposition: relative;\n\tz-index: 50;\n\tuser-select: none;\n\ttransition: opacity 150ms ease;\n}\n\n.cc-usageRow--dim {\n\topacity: 0.6;\n}\n\n.cc-usageGroup {\n\tdisplay: flex;\n\talign-items: center;\n\tgap: 8px;\n\tflex: 1;\n\tmin-width: 0;\n}\n\n.cc-usageGroup--single {\n\twidth: 100%;\n}\n\n.cc-usageGroup--weekly {\n\tjustify-content: flex-end;\n}\n\n.cc-usageText {\n\twhite-space: nowrap;\n}\n\n/* Bars (mini + usage) */\n.cc-bar {\n\t--cc-radius: 3px;\n\t--cc-stroke: transparent;\n\t--cc-fill: transparent;\n\t--cc-fill-caution: var(--cc-fill);\n\t--cc-fill-warn: var(--cc-fill);\n\t--cc-marker: transparent;\n\n\tposition: relative;\n\tbox-sizing: border-box;\n\twidth: 100%;\n\theight: 6px;\n\tborder-radius: var(--cc-radius);\n\tborder: 1px solid var(--cc-stroke);\n\toverflow: visible;\n\tuser-select: none;\n}\n\n.cc-bar__fill {\n\twidth: 0%;\n\theight: 100%;\n\tbackground: var(--cc-fill);\n\ttransition: width 300ms ease, background-color 300ms ease;\n\tborder-top-left-radius: max(0px, calc(var(--cc-radius) - 1px));\n\tborder-bottom-left-radius: max(0px, calc(var(--cc-radius) - 1px));\n\tborder-top-right-radius: 0;\n\tborder-bottom-right-radius: 0;\n}\n\n.cc-bar__fill.cc-full {\n\tborder-top-right-radius: max(0px, calc(var(--cc-radius) - 1px));\n\tborder-bottom-right-radius: max(0px, calc(var(--cc-radius) - 1px));\n}\n\n.cc-bar__fill.cc-caution {\n\tbackground: var(--cc-fill-caution);\n}\n\n.cc-bar__fill.cc-warn {\n\tbackground: var(--cc-fill-warn);\n}\n\n.cc-bar__marker {\n\tposition: absolute;\n\ttop: 0;\n\tbottom: 0;\n\tleft: 0%;\n\twidth: 2px;\n\tbackground: var(--cc-marker);\n\tpointer-events: none;\n}\n\n.cc-bar--mini {\n\twidth: 60px;\n\theight: 7px;\n\t--cc-radius: 2px;\n}\n\n.cc-bar--usage {\n\theight: 10px;\n\tflex: 1;\n}\n\n/* Tooltips */\n.cc-tooltip {\n\tposition: fixed;\n\tz-index: 9999;\n\tpadding: 4px 8px;\n\tborder-radius: 4px;\n\tfont-size: 12px;\n\twhite-space: pre-line;\n\tuser-select: none;\n\tpointer-events: none;\n\topacity: 0;\n\ttransition: opacity 200ms ease;\n}\n\n.cc-tooltipTrigger {\n\t-webkit-touch-callout: none;\n\t-webkit-user-select: none;\n\tuser-select: none;\n\tcursor: help;\n}\n\n/* Refresh button */\n.cc-refreshBtn {\n\tdisplay: inline-flex;\n\talign-items: center;\n\tjustify-content: center;\n\tflex-shrink: 0;\n\tpadding: 2px;\n\tbackground: none;\n\tborder: none;\n\tcursor: pointer;\n\topacity: 0.45;\n\ttransition: opacity 150ms ease;\n\tborder-radius: 3px;\n}\n\n.cc-refreshBtn:hover {\n\topacity: 0.9;\n}\n\n.cc-refreshBtn:active {\n\topacity: 0.6;\n}\n\n@keyframes cc-spin {\n\tfrom { transform: rotate(0deg); }\n\tto { transform: rotate(360deg); }\n}\n\n.cc-refreshBtn--spinning .cc-refreshIcon {\n\tanimation: cc-spin 0.7s linear infinite;\n}\n\n/* Hide optional elements completely (no layout space) */\n.cc-hidden {\n\tdisplay: none !important;\n}\n';
+	const STYLES = '/* Header: tokens + cache timer + export */\n.cc-header {\n\tdisplay: flex;\n\talign-items: center;\n\tgap: 6px;\n\tmargin-top: 2px;\n\tuser-select: none;\n}\n\n.cc-headerItem {\n\twhite-space: nowrap;\n}\n\n/* Usage row: session + weekly */\n.cc-usageRow {\n\tposition: relative;\n\tbox-sizing: border-box;\n\tmargin-top: 4px;\n\tpadding-inline: 8px;\n\tz-index: 50;\n\tuser-select: none;\n\ttransition: opacity 150ms ease;\n}\n\n.cc-usageRow--dim {\n\topacity: 0.6;\n}\n\n.cc-usageGroup {\n\tdisplay: flex;\n\talign-items: center;\n\tgap: 8px;\n\tflex: 1;\n\tmin-width: 0;\n}\n\n.cc-usageGroup--single {\n\twidth: 100%;\n}\n\n.cc-usageGroup--weekly {\n\tjustify-content: flex-end;\n}\n\n.cc-usageText {\n\twhite-space: nowrap;\n}\n\n/* Bars (mini + usage) */\n.cc-bar {\n\t--cc-radius: 3px;\n\t--cc-stroke: transparent;\n\t--cc-fill: transparent;\n\t--cc-fill-caution: var(--cc-fill);\n\t--cc-fill-warn: var(--cc-fill);\n\t--cc-marker: transparent;\n\n\tposition: relative;\n\tbox-sizing: border-box;\n\twidth: 100%;\n\theight: 6px;\n\tborder-radius: var(--cc-radius);\n\tborder: 1px solid var(--cc-stroke);\n\toverflow: visible;\n\tuser-select: none;\n}\n\n.cc-bar__fill {\n\twidth: 0%;\n\theight: 100%;\n\tbackground: var(--cc-fill);\n\ttransition: width 300ms ease, background-color 300ms ease;\n\tborder-top-left-radius: max(0px, calc(var(--cc-radius) - 1px));\n\tborder-bottom-left-radius: max(0px, calc(var(--cc-radius) - 1px));\n\tborder-top-right-radius: 0;\n\tborder-bottom-right-radius: 0;\n}\n\n.cc-bar__fill.cc-full {\n\tborder-top-right-radius: max(0px, calc(var(--cc-radius) - 1px));\n\tborder-bottom-right-radius: max(0px, calc(var(--cc-radius) - 1px));\n}\n\n.cc-bar__fill.cc-caution {\n\tbackground: var(--cc-fill-caution);\n}\n\n.cc-bar__fill.cc-warn {\n\tbackground: var(--cc-fill-warn);\n}\n\n.cc-bar__marker {\n\tposition: absolute;\n\ttop: 0;\n\tbottom: 0;\n\tleft: 0%;\n\twidth: 2px;\n\tbackground: var(--cc-marker);\n\tpointer-events: none;\n}\n\n.cc-bar--usage {\n\theight: 10px;\n\tflex: 1;\n}\n\n/* Tooltips */\n.cc-tooltip {\n\tposition: fixed;\n\tz-index: 9999;\n\tpadding: 4px 8px;\n\tborder-radius: 4px;\n\tfont-size: 12px;\n\twhite-space: pre-line;\n\tuser-select: none;\n\tpointer-events: none;\n\topacity: 0;\n\ttransition: opacity 200ms ease;\n}\n\n.cc-tooltipTrigger {\n\t-webkit-touch-callout: none;\n\t-webkit-user-select: none;\n\tuser-select: none;\n\tcursor: help;\n}\n\n/* Refresh button */\n.cc-refreshBtn {\n\tdisplay: inline-flex;\n\talign-items: center;\n\tjustify-content: center;\n\tflex-shrink: 0;\n\tpadding: 2px;\n\tbackground: none;\n\tborder: none;\n\tcursor: pointer;\n\topacity: 0.45;\n\ttransition: opacity 150ms ease;\n\tborder-radius: 3px;\n}\n\n.cc-refreshBtn:hover {\n\topacity: 0.9;\n}\n\n.cc-refreshBtn:active {\n\topacity: 0.6;\n}\n\n@keyframes cc-spin {\n\tfrom { transform: rotate(0deg); }\n\tto { transform: rotate(360deg); }\n}\n\n.cc-refreshBtn--spinning .cc-refreshIcon {\n\tanimation: cc-spin 0.7s linear infinite;\n}\n\n/* Export button + format menu */\n.cc-exportBtn {\n\tdisplay: inline-flex;\n\talign-items: center;\n\tjustify-content: center;\n\tflex-shrink: 0;\n\tpadding: 2px;\n\tbackground: none;\n\tborder: none;\n\tcursor: pointer;\n\topacity: 0.45;\n\ttransition: opacity 150ms ease;\n\tborder-radius: 3px;\n}\n\n.cc-exportBtn:hover {\n\topacity: 0.9;\n}\n\n.cc-exportBtn--busy {\n\topacity: 0.35;\n\tpointer-events: none;\n}\n\n.cc-exportBtn--error {\n\tcolor: #ce2029 !important;\n\topacity: 1;\n}\n\n.cc-exportMenu {\n\tposition: fixed;\n\tz-index: 9999;\n\tdisplay: flex;\n\tflex-direction: column;\n\tgap: 2px;\n\tmin-width: 150px;\n\tpadding: 4px;\n\tborder-radius: 8px;\n\tborder-width: 1px;\n\tborder-style: solid;\n\tbox-shadow: 0 8px 24px rgb(0 0 0 / 0.18);\n\tuser-select: none;\n}\n\n.cc-exportMenuItem {\n\tappearance: none;\n\tbackground: none;\n\tborder: none;\n\tcolor: inherit;\n\tfont: inherit;\n\tfont-size: 12px;\n\ttext-align: left;\n\twhite-space: nowrap;\n\tpadding: 6px 10px;\n\tborder-radius: 5px;\n\tcursor: pointer;\n}\n\n.cc-exportMenuItem:hover {\n\tbackground: rgb(127 127 127 / 0.18);\n}\n\n/* Hide optional elements completely (no layout space) */\n.cc-hidden {\n\tdisplay: none !important;\n}\n';
 
 	function injectStyles() {
 		if (document.getElementById(STYLE_ID)) return;
@@ -1108,6 +1507,9 @@
 	const ui = new CC.ui.CounterUI({
 		onUsageRefresh: async () => {
 			await refreshUsage();
+		},
+		onExport: async (format) => {
+			await exportConversation(format);
 		}
 	});
 
@@ -1188,6 +1590,20 @@
 		}
 	}
 
+	async function exportConversation(format) {
+		await bridgeReady;
+		if (!currentConversationId) return;
+
+		const orgId = currentOrgId || getOrgIdFromCookie();
+		if (!orgId) return;
+		updateOrgIdIfNeeded(orgId);
+
+		// Fetch fresh rather than reusing the last payload, so an export always
+		// includes the turn that just finished.
+		const data = await CC.bridge.requestConversation(orgId, currentConversationId);
+		if (data) CC.exportChat.download(data, format);
+	}
+
 	function handleGenerationStart() {
 		if (!currentConversationId) return;
 		ui.setPendingCache(true);
@@ -1210,7 +1626,7 @@
 	async function handleUrlChange() {
 		currentConversationId = getConversationId();
 
-		waitForElement(CC.DOM.MODEL_SELECTOR_DROPDOWN, 60000).then((el) => {
+		waitForElement(CC.DOM.CHAT_INPUT, 60000).then((el) => {
 			if (el) ui.attachUsageLine();
 		});
 		waitForElement(CC.DOM.CHAT_MENU_TRIGGER, 60000).then((el) => {

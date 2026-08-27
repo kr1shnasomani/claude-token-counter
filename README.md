@@ -4,7 +4,7 @@
 
 <h1 align="center">Claude Token Counter</h1>
 
-<p align="center"><b>A minimal browser extension that shows live token count, cache timer, and usage bars on claude.ai</b></p>
+<p align="center"><b>A minimal browser extension that shows live token count, cache timer, and usage bars on claude.ai, and exports any conversation to Markdown or plain text</b></p>
 
 <p align="center">
   <a href="https://chromewebstore.google.com/detail/claude-token-counter/bioobpobpbeohjoefndgkiaakboimpch">
@@ -20,8 +20,9 @@
 ## Features
 
 - **Token count**: approximate token count for the current conversation
-- **Cache timer**: countdown showing how long the conversation remains cached (cheaper to continue)
+- **Cache timer**: countdown showing how long the conversation remains cached (cheaper to continue). It appears only while the context is actually cached and disappears when the window closes
 - **Usage bars**: session (5 hour) and weekly (7 day) usage from Claude's native API, with progress bars and reset countdowns (more accurate than the rounded /usage page)
+- **Chat export**: download the current conversation as Markdown or plain text, including any files Claude generated
 
 ## Installation
 
@@ -59,7 +60,8 @@ Runs in the isolated content script world, declared in `manifest.json` against `
 - `bridge-client.js` injects `bridge.js` (via `chrome.runtime.getURL` / `browser.runtime.getURL`, whichever exists) as a `<script src="...">` tag so it runs in the main world, then listens for its `postMessage` events.
 - `main.js` orchestrates state: it tracks the current conversation ID (parsed from the URL path), the current org ID (read from the `lastActiveOrg` cookie), and reacts to the bridge's events by kicking off token recomputation or usage refreshes. A `MutationObserver`-based `waitForElement` helper waits for claude.ai's own DOM anchors (like the model selector dropdown) to appear before attaching UI, since the SPA re-renders on every navigation.
 - `tokens.js` turns a raw conversation payload into a token count. claude.ai stores every edit and every branch of a conversation in one flat `chat_messages` array; the extension walks backward from `current_leaf_message_uuid` via each message's `parent_message_uuid` to reconstruct just the active branch (the "trunk"). It strips out non-text content (thinking blocks, images, documents), serializes `tool_use`/`tool_result` blocks deterministically, and feeds the resulting text through a vendored `o200k_base` tokenizer (`src/vendor/o200k_base.js`), the same token encoding Claude uses internally, for an approximate but consistent count. A per-message cache (keyed by message UUID plus a length+hash fingerprint, hashed via the bridge's `crypto.subtle.digest` call) avoids re-tokenizing messages that haven't changed.
-- `ui.js` renders and updates the actual widgets: the token progress bar against the 200k context limit, the cache countdown (based on the last assistant message's timestamp plus a 5 minute cache window), and the session/weekly usage bars.
+- `ui.js` renders and updates the actual widgets: the token count in the chat header, the cache countdown (based on the last assistant message's timestamp plus a 5 minute cache window), the session/weekly usage bars, and the export button. The usage row is anchored to the composer card (`.rounded-composer`) so it sits inside the input box on both the home and conversation layouts.
+- `export.js` turns a conversation payload into a Markdown or plain text document. It reuses the same trunk reconstruction as `tokens.js`, so an export contains the conversation as it currently reads, not the edited-away branches. Files Claude generated (`create_file`, and the older `artifacts` tool) are embedded in full, with every later `str_replace` edit replayed onto them so the exported file matches the version that was actually used. Tool calls collapse into a one-line summary rather than pages of JSON, and thinking blocks are excluded. The download uses a blob URL and an `<a download>` click, so no `downloads` permission is needed.
 
 **3. Usage bars specifically**
 
@@ -71,6 +73,24 @@ Usage numbers come from two sources that the extension reconciles:
 A one-second interval (`tick()` in `main.js`) keeps the countdowns moving, triggers an automatic refresh right after either window rolls over, and does a once-an-hour safety refetch if neither the SSE stream nor a manual refresh has updated the numbers recently.
 
 Nothing here talks to any server other than claude.ai itself. There's no analytics, no telemetry, and no third-party network calls; all computation (tokenizing, hashing, caching) happens locally in the browser.
+
+## Exporting a conversation
+
+Click the download icon next to the token counter in the chat header and pick **Markdown (.md)** or **Plain text (.txt)**. The file is built in the browser and saved straight to your downloads; nothing is uploaded anywhere.
+
+An export contains every message on the active branch, generated files in full, and one-line summaries of the tools Claude used. Alternate versions of edited messages, thinking blocks, and raw tool output are left out. Binary outputs such as `.xlsx` files live in Claude's sandbox rather than in the conversation, so they are referenced by name but cannot be embedded.
+
+## Development
+
+There is no build step. Load `manifest.json` as an unpacked extension and reload it after editing.
+
+The test suites cover the token/cache header, the exporter, and extension/userscript parity. They run the real content scripts in Node against a small DOM shim:
+
+```
+npm test
+```
+
+The userscript in `userscript/` is a hand-maintained bundle of the same sources. `test/parity.test.js` fails if it drifts out of sync, which is how it silently fell a release behind once before.
 
 ## Credits
 

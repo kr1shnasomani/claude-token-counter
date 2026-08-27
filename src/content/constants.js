@@ -5,13 +5,15 @@
 
 	CC.DOM = Object.freeze({
 		CHAT_MENU_TRIGGER: '[data-testid="chat-title-split"]',
-		MODEL_SELECTOR_DROPDOWN: '[data-testid="model-selector-dropdown"]',
+		CHAT_INPUT: '[data-testid="chat-input"]',
+		COMPOSER_CARD: '[class*="rounded-composer"]',
 		CHAT_PROJECT_WRAPPER: '.chat-project-wrapper',
 		BRIDGE_SCRIPT_ID: 'cc-bridge-script'
 	});
 
 	CC.CONST = Object.freeze({
-		CACHE_WINDOW_MS: 5 * 60 * 1000
+		CACHE_WINDOW_MS: 5 * 60 * 1000,
+		PENDING_CACHE_TIMEOUT_MS: 60 * 1000
 	});
 
 	CC.COLORS = Object.freeze({

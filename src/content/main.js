@@ -131,6 +131,9 @@
 	const ui = new CC.ui.CounterUI({
 		onUsageRefresh: async () => {
 			await refreshUsage();
+		},
+		onExport: async (format) => {
+			await exportConversation(format);
 		}
 	});
 	ui.initialize();
@@ -195,6 +198,20 @@
 		}
 	}
 
+	async function exportConversation(format) {
+		await bridgeReady;
+		if (!currentConversationId) return;
+
+		const orgId = currentOrgId || getOrgIdFromCookie();
+		if (!orgId) return;
+		updateOrgIdIfNeeded(orgId);
+
+		// Fetch fresh rather than reusing the last payload, so an export always
+		// includes the turn that just finished.
+		const data = await CC.bridge.requestConversation(orgId, currentConversationId);
+		if (data) CC.exportChat.download(data, format);
+	}
+
 	function handleGenerationStart() {
 		if (!currentConversationId) return;
 		ui.setPendingCache(true);
@@ -223,7 +240,7 @@
 
 		// Attach usage line and header independently - they have different anchor elements
 		// and CHAT_MENU_TRIGGER doesn't exist on home/new pages
-		waitForElement(CC.DOM.MODEL_SELECTOR_DROPDOWN, 60000).then((el) => {
+		waitForElement(CC.DOM.CHAT_INPUT, 60000).then((el) => {
 			if (el) ui.attachUsageLine();
 		});
 		waitForElement(CC.DOM.CHAT_MENU_TRIGGER, 60000).then((el) => {
