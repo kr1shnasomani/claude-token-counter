@@ -83,16 +83,16 @@
 	function parseUsageFromUsageEndpoint(raw) {
 		if (!raw || typeof raw !== 'object') return null;
 
-		const normalizeWindow = (w, hours) => {
+		const normalizeWindow = (w) => {
 			if (!w || typeof w !== 'object') return null;
 			if (typeof w.utilization !== 'number' || !Number.isFinite(w.utilization)) return null;
 			const utilization = Math.max(0, Math.min(100, w.utilization));
 			const resets_at = typeof w.resets_at === 'string' ? w.resets_at : null;
-			return { utilization, resets_at, window_hours: hours };
+			return { utilization, resets_at };
 		};
 
-		const fiveHour = normalizeWindow(raw.five_hour, 5);
-		const sevenDay = normalizeWindow(raw.seven_day, 24 * 7);
+		const fiveHour = normalizeWindow(raw.five_hour);
+		const sevenDay = normalizeWindow(raw.seven_day);
 
 		if (!fiveHour && !sevenDay) return null;
 		return { five_hour: fiveHour, seven_day: sevenDay };
@@ -101,18 +101,18 @@
 	function parseUsageFromMessageLimit(raw) {
 		if (!raw?.windows || typeof raw.windows !== 'object') return null;
 
-		const normalizeWindow = (w, hours) => {
+		const normalizeWindow = (w) => {
 			if (!w || typeof w !== 'object') return null;
 			if (typeof w.utilization !== 'number' || !Number.isFinite(w.utilization)) return null;
 			const utilization = Math.max(0, Math.min(100, w.utilization * 100));
 			const resets_at = typeof w.resets_at === 'number' && Number.isFinite(w.resets_at)
 				? new Date(w.resets_at * 1000).toISOString()
 				: null;
-			return { utilization, resets_at, window_hours: hours };
+			return { utilization, resets_at };
 		};
 
-		const fiveHour = normalizeWindow(raw.windows['5h'], 5);
-		const sevenDay = normalizeWindow(raw.windows['7d'], 24 * 7);
+		const fiveHour = normalizeWindow(raw.windows['5h']);
+		const sevenDay = normalizeWindow(raw.windows['7d']);
 
 		if (!fiveHour && !sevenDay) return null;
 		return { five_hour: fiveHour, seven_day: sevenDay };
@@ -122,10 +122,11 @@
 	let currentOrgId = null;
 
 	let usageState = null; // last snapshot
-	let usageResetMs = { five_hour: null, seven_day: null }; // cached parsed timestamps
+	const usageResetMs = { five_hour: null, seven_day: null }; // cached parsed timestamps
 	let lastUsageSseMs = 0;
 	let usageFetchInFlight = false;
 	let lastUsageUpdateMs = 0;
+	let lastUsageAttemptMs = 0;
 	const rolloverHandledForResetMs = { five_hour: null, seven_day: null };
 
 	const ui = new CC.ui.CounterUI({
@@ -151,6 +152,7 @@
 		usageResetMs.five_hour = normalized.five_hour?.resets_at ? Date.parse(normalized.five_hour.resets_at) : null;
 		usageResetMs.seven_day = normalized.seven_day?.resets_at ? Date.parse(normalized.seven_day.resets_at) : null;
 		ui.setUsage(normalized);
+		if (source !== 'snapshot') persistSnapshot(normalized);
 	}
 
 	function updateOrgIdIfNeeded(newOrgId) {
@@ -161,6 +163,9 @@
 
 	async function refreshUsage() {
 		await bridgeReady;
+		// Recorded even when the fetch fails or the payload is unusable, so the
+		// safety refresh below backs off instead of retrying every second.
+		lastUsageAttemptMs = Date.now();
 		const orgId = currentOrgId || getOrgIdFromCookie();
 		if (!orgId) return;
 		updateOrgIdIfNeeded(orgId);
@@ -178,6 +183,113 @@
 
 		const parsed = parseUsageFromUsageEndpoint(raw);
 		applyUsageUpdate(parsed, 'usage');
+	}
+
+	// --- popup snapshot -----------------------------------------------------
+	// The popup is a separate document and cannot read this script's memory, so the
+	// last good reading is mirrored into extension storage. Deliberately a snapshot:
+	// it carries its own timestamp rather than pretending to be live.
+
+	const PLAN_LABELS = [
+		['claude_max', 'MAX'],
+		['claude_pro', 'PRO'],
+		['claude_team', 'TEAM'],
+		['raven', 'ENTERPRISE'],
+		['enterprise', 'ENTERPRISE']
+	];
+
+	let planLabel = null;
+
+	function getStorage() {
+		try {
+			return globalThis.browser?.storage?.local || globalThis.chrome?.storage?.local || null;
+		} catch {
+			return null;
+		}
+	}
+
+	async function resolvePlanLabel() {
+		if (planLabel) return planLabel;
+		const orgId = currentOrgId || getOrgIdFromCookie();
+		if (!orgId) return null;
+		try {
+			const orgs = await CC.bridge.requestOrgs();
+			const list = Array.isArray(orgs) ? orgs : [orgs];
+			const org = list.find((o) => o?.uuid === orgId) || list[0];
+			const caps = Array.isArray(org?.capabilities) ? org.capabilities : [];
+			const match = PLAN_LABELS.find(([cap]) => caps.includes(cap));
+			planLabel = match ? match[1] : 'FREE';
+		} catch {
+			planLabel = null;
+		}
+		return planLabel;
+	}
+
+	async function persistSnapshot(windows) {
+		const storage = getStorage();
+		if (!storage || !windows) return;
+		const plan = await resolvePlanLabel();
+		try {
+			await storage.set({
+				'cc:usageSnapshot': {
+					updatedAt: Date.now(),
+					orgId: currentOrgId || getOrgIdFromCookie(),
+					plan,
+					uiVariant: CC.uiVariant || null,
+					five_hour: windows.five_hour,
+					seven_day: windows.seven_day
+				}
+			});
+		} catch {
+			// Storage is a convenience for the popup; never let it break the page UI.
+		}
+	}
+
+	/**
+	 * Show the last stored reading immediately on load.
+	 *
+	 * Some plans - free tier among them - get `null` for every window from the usage
+	 * endpoint, so their only source is the SSE event that arrives with a reply. That
+	 * left the bars blank until the first message of the session. A window whose
+	 * reset time has already passed is dropped rather than shown stale.
+	 */
+	/**
+	 * chrome.* takes a callback, browser.* returns a promise and ignores the callback.
+	 * Preferring one over the other silently breaks the other browser, so accept both.
+	 */
+	function storageGet(storage, key) {
+		return new Promise((resolve) => {
+			let settled = false;
+			const done = (value) => {
+				if (settled) return;
+				settled = true;
+				resolve(value || null);
+			};
+			try {
+				const maybePromise = storage.get(key, done);
+				if (maybePromise && typeof maybePromise.then === 'function') maybePromise.then(done, () => done(null));
+			} catch {
+				done(null);
+			}
+		});
+	}
+
+	async function seedFromSnapshot() {
+		const storage = getStorage();
+		if (!storage || usageState) return;
+
+		const items = await storageGet(storage, 'cc:usageSnapshot');
+		const snapshot = items?.['cc:usageSnapshot'] || null;
+		if (!snapshot || usageState) return;
+
+		const unexpired = (w) =>
+			w && typeof w.utilization === 'number' && w.resets_at && Date.parse(w.resets_at) > Date.now() ? w : null;
+
+		const five_hour = unexpired(snapshot.five_hour);
+		const seven_day = unexpired(snapshot.seven_day);
+		if (!five_hour && !seven_day) return;
+
+		applyUsageUpdate({ five_hour, seven_day }, 'snapshot');
 	}
 
 	async function refreshConversation() {
@@ -231,6 +343,14 @@
 		applyUsageUpdate(parsed, 'sse');
 	}
 
+	CC.bridge.on('cc:org', ({ orgId } = {}) => {
+		// Strictly a fallback for a missing cookie. Never override an id we already
+		// have: someone in several orgs would otherwise latch onto whichever org a
+		// stray request happened to touch.
+		if (currentOrgId) return;
+		updateOrgIdIfNeeded(orgId);
+		if (currentOrgId && !usageState) refreshUsage();
+	});
 	CC.bridge.on('cc:generation_start', handleGenerationStart);
 	CC.bridge.on('cc:conversation', handleConversationPayload);
 	CC.bridge.on('cc:message_limit', handleMessageLimit);
@@ -247,18 +367,20 @@
 			if (el) ui.attachHeader();
 		});
 
+		// Best-effort orgId from cookie.
+		updateOrgIdIfNeeded(getOrgIdFromCookie());
+
+		// Usage is org-level, not conversation-level, so fetch it even on /new. This
+		// used to sit after the early return below, which left the popup with nothing
+		// to show until the user opened an actual conversation.
+		if (!usageState) await refreshUsage();
+
 		if (!currentConversationId) {
 			ui.setConversationMetrics();
 			return;
 		}
 
-		// Best-effort orgId from cookie.
-		updateOrgIdIfNeeded(getOrgIdFromCookie());
-
 		await refreshConversation();
-
-		// Usage is org-level, not conversation-level. Only fetch on first load or if stale.
-		if (!usageState) await refreshUsage();
 	}
 
 	const unobserveUrl = observeUrlChanges(handleUrlChange);
@@ -268,13 +390,19 @@
 	let branchObserver = null;
 	document.addEventListener('click', (e) => {
 		if (!currentConversationId) return;
-		const btn = e.target.closest('button[aria-label="Previous"], button[aria-label="Next"]');
+		const btn = e.target.closest('button');
 		if (!btn) return;
 
-		// Find the branch indicator span (matches "X / Y" pattern) near the clicked button
-		const container = btn.closest('.inline-flex');
-		const spans = container?.querySelectorAll('span') || [];
-		const indicator = Array.from(spans).find((s) => /^\d+\s*\/\s*\d+$/.test(s.textContent.trim()));
+		// Branch switchers sit beside an "N / M" counter. Match on that shape rather
+		// than on aria-label text or a utility class: the labels are English-only, so
+		// anyone using Claude in another language got no refresh on branch switches.
+		let indicator = null;
+		let scope = btn.parentElement;
+		for (let hops = 0; scope && hops < 4 && !indicator; hops++, scope = scope.parentElement) {
+			indicator = Array.from(scope.querySelectorAll('span')).find((s) =>
+				/^\d+\s*\/\s*\d+$/.test((s.textContent || '').trim())
+			);
+		}
 		if (!indicator) return;
 
 		const originalText = indicator.textContent;
@@ -302,7 +430,29 @@
 		}, 60000);
 	});
 
+	// --- settings -----------------------------------------------------------
+	// Owned by the popup, applied here. Changes take effect without a reload.
+
+	async function loadSettings() {
+		const storage = getStorage();
+		if (!storage) return;
+		const items = await storageGet(storage, CC.SETTINGS_KEY);
+		ui.applySettings(items?.[CC.SETTINGS_KEY]);
+	}
+
+	function watchSettings() {
+		const area = globalThis.browser?.storage || globalThis.chrome?.storage;
+		if (!area?.onChanged?.addListener) return;
+		area.onChanged.addListener((changes, areaName) => {
+			if (areaName !== 'local' || !changes[CC.SETTINGS_KEY]) return;
+			ui.applySettings(changes[CC.SETTINGS_KEY].newValue);
+		});
+	}
+
 	// Initial attach + fetches
+	loadSettings();
+	watchSettings();
+	seedFromSnapshot();
 	handleUrlChange();
 
 	function tick() {
@@ -320,15 +470,19 @@
 			refreshUsage();
 		}
 
-		// Optional hourly safety refresh.
+		// Optional hourly safety refresh. Accounts without usage windows (some plans
+		// return no five_hour/seven_day at all) never set lastUsageUpdateMs, so the
+		// attempt clock is what keeps this from firing on every tick.
 		const ONE_HOUR_MS = 60 * 60 * 1000;
+		const USAGE_RETRY_MS = 5 * 60 * 1000;
 		const sseAge = now - lastUsageSseMs;
 		const anyAge = now - lastUsageUpdateMs;
-		if (!document.hidden && sseAge > ONE_HOUR_MS && anyAge > ONE_HOUR_MS) {
+		const attemptAge = now - lastUsageAttemptMs;
+		if (!document.hidden && sseAge > ONE_HOUR_MS && anyAge > ONE_HOUR_MS && attemptAge > USAGE_RETRY_MS) {
 			refreshUsage();
 		}
 	}
 
-	// Keep countdowns + markers updated.
+	// Keep the countdowns ticking.
 	setInterval(tick, 1000);
 })();

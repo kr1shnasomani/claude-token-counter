@@ -1,0 +1,357 @@
+:root {
+	--bg: #ffffff;
+	--text: #1a1a18;
+	--muted: #8a8a83;
+	--track: #e4e4e0;
+	--fill: #2c84db;
+	--fill-caution: #f0b544;
+	--fill-warn: #ce2029;
+	--field: #fbfbfa;
+	--tip-bg: #26251f;
+	--tip-text: #faf9f5;
+	color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root {
+		--bg: #1f1e1d;
+		--text: #faf9f5;
+		--muted: #9a9a92;
+		--track: #35342f;
+		--fill: #2c84db;
+		--fill-caution: #f0b544;
+		--fill-warn: #ce2029;
+		--field: #191817;
+		--tip-bg: #3a3934;
+		--tip-text: #faf9f5;
+	}
+}
+
+* {
+	box-sizing: border-box;
+}
+
+[hidden] {
+	display: none !important;
+}
+
+body {
+	width: 320px;
+	margin: 0;
+	padding: 18px 20px 14px;
+	background: var(--bg);
+	color: var(--text);
+	font-family: ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+	-webkit-font-smoothing: antialiased;
+}
+
+.brand {
+	display: flex;
+	align-items: center;
+	gap: 9px;
+	margin-bottom: 18px;
+}
+
+.brand__mark {
+	display: block;
+	border-radius: 5px;
+}
+
+.brand__name {
+	font-size: 19px;
+	font-weight: 600;
+	letter-spacing: -0.01em;
+}
+
+.bar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	margin-bottom: 16px;
+}
+
+.bar__actions {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	flex-shrink: 0;
+}
+
+.eyebrow {
+	margin: 0;
+	font-size: 11.5px;
+	font-weight: 600;
+	letter-spacing: 0.07em;
+	text-transform: uppercase;
+	color: var(--muted);
+}
+
+.row {
+	margin-bottom: 16px;
+}
+
+.row__head {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 10px;
+	margin-bottom: 8px;
+}
+
+.row__label {
+	font-size: 14.5px;
+	font-weight: 500;
+}
+
+.row__value {
+	font-size: 13px;
+	color: var(--muted);
+	white-space: nowrap;
+}
+
+.track {
+	height: 7px;
+	border-radius: 999px;
+	background: var(--track);
+	overflow: hidden;
+}
+
+.fill {
+	height: 100%;
+	width: 0;
+	border-radius: 999px;
+	background: var(--fill);
+	transition: width 240ms ease, background-color 240ms ease;
+}
+
+/* Same thresholds as the bars on claude.ai, so a limit looks equally urgent
+   whichever surface you happen to be looking at. */
+.fill.caution {
+	background: var(--fill-caution);
+}
+
+.fill.warn {
+	background: var(--fill-warn);
+}
+
+.foot {
+	display: flex;
+	justify-content: flex-end;
+	margin-top: 14px;
+	min-height: 15px;
+}
+
+.stamp {
+	font-size: 12px;
+	color: var(--muted);
+}
+
+.icon {
+	position: relative;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+	padding: 4px;
+	background: none;
+	border: none;
+	border-radius: 5px;
+	color: var(--muted);
+	cursor: pointer;
+	opacity: 0.75;
+	transition: opacity 150ms ease, background-color 150ms ease;
+}
+
+.icon:hover {
+	opacity: 1;
+	background: var(--track);
+}
+
+.icon[disabled] {
+	cursor: default;
+	opacity: 0.4;
+}
+
+.icon[aria-pressed='true'] {
+	opacity: 1;
+	background: var(--track);
+	color: var(--text);
+}
+
+/* Hover labels on the action icons */
+.icon[data-tip]::after {
+	content: attr(data-tip);
+	position: absolute;
+	top: calc(100% + 6px);
+	left: 50%;
+	transform: translateX(-50%);
+	padding: 4px 8px;
+	border-radius: 6px;
+	background: var(--tip-bg);
+	color: var(--tip-text);
+	font-size: 11.5px;
+	font-weight: 500;
+	white-space: nowrap;
+	pointer-events: none;
+	opacity: 0;
+	transition: opacity 120ms ease;
+	z-index: 5;
+}
+
+.icon[data-tip]:hover::after,
+.icon[data-tip]:focus-visible::after {
+	opacity: 1;
+}
+
+/* The last icon sits against the edge, so its label hangs left instead. */
+.icon:last-child[data-tip]::after {
+	left: auto;
+	right: 0;
+	transform: none;
+}
+
+/* Feedback panel */
+#feedback textarea {
+	width: 100%;
+	resize: vertical;
+	min-height: 84px;
+	padding: 9px 10px;
+	border-radius: 8px;
+	border: 1px solid var(--track);
+	background: var(--field);
+	color: var(--text);
+	font: inherit;
+	font-size: 13.5px;
+}
+
+#feedback textarea::placeholder {
+	color: var(--muted);
+}
+
+#feedback textarea:focus {
+	outline: none;
+	border-color: var(--fill);
+}
+
+.note {
+	margin: 10px 0 0;
+	font-size: 11.5px;
+	line-height: 1.45;
+	color: var(--muted);
+}
+
+.btnRow {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+	margin-top: 12px;
+}
+
+.btn {
+	padding: 6px 13px;
+	border-radius: 7px;
+	border: 1px solid var(--track);
+	background: none;
+	color: var(--text);
+	font: inherit;
+	font-size: 13px;
+	cursor: pointer;
+	transition: background-color 150ms ease;
+}
+
+.btn:hover {
+	background: var(--track);
+}
+
+.btn--primary {
+	border-color: transparent;
+	background: var(--fill);
+	color: #fff;
+}
+
+.btn--primary:hover {
+	filter: brightness(1.08);
+	background: var(--fill);
+}
+
+.btn[disabled] {
+	opacity: 0.45;
+	cursor: default;
+}
+
+@keyframes cc-spin {
+	to { transform: rotate(360deg); }
+}
+
+.icon--busy svg {
+	animation: cc-spin 0.7s linear infinite;
+}
+
+/* Settings panel */
+.opt {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	padding: 8px 0;
+	/* Same type as .row__label, so both views read as one screen. */
+	font-size: 14.5px;
+	font-weight: 500;
+	cursor: pointer;
+	user-select: none;
+}
+
+.opt:first-of-type {
+	padding-top: 0;
+}
+
+.opt input {
+	position: absolute;
+	opacity: 0;
+	width: 0;
+	height: 0;
+}
+
+.sw {
+	position: relative;
+	flex-shrink: 0;
+	width: 32px;
+	height: 18px;
+	border-radius: 999px;
+	background: var(--track);
+	transition: background-color 160ms ease;
+}
+
+.sw::after {
+	content: '';
+	position: absolute;
+	top: 2px;
+	left: 2px;
+	width: 14px;
+	height: 14px;
+	border-radius: 50%;
+	background: var(--bg);
+	box-shadow: 0 1px 2px rgb(0 0 0 / 0.25);
+	transition: transform 160ms ease;
+}
+
+.opt input:checked + .sw {
+	background: var(--fill);
+}
+
+.opt input:checked + .sw::after {
+	transform: translateX(14px);
+}
+
+.opt input:focus-visible + .sw {
+	outline: 2px solid var(--fill);
+	outline-offset: 2px;
+}
+
+.empty {
+	margin: 0;
+	padding: 6px 0 10px;
+	font-size: 13px;
+	color: var(--muted);
+}

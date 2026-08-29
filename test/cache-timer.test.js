@@ -7,7 +7,7 @@ ui.initialize();
 
 const header = () => ui.headerContainer.textContent || '(empty)';
 const TOKENS = (n) => `Token Counter: ~${n} tokens`;
-const CACHE = (v) => ` | Cached Context Timer: ${v}`;
+const CACHE = (v) => `\u00A0|\u00A0Cached Context Timer:\u00A0${v}`;
 const is = (label, expected) => t(label, header() === expected, `expected ${JSON.stringify(expected)}\n          got      ${JSON.stringify(header())}`);
 
 section('visible only while cached');

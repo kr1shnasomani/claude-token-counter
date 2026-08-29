@@ -25,6 +25,13 @@ class El {
 	}
 	set textContent(v) { this._text = String(v); this.children = []; }
 	set innerHTML(v) { this._html = v; }
+	// A real element's classList reflects its className; without this the shim
+	// silently reports classes as absent that the browser would have.
+	set className(v) {
+		this._className = String(v);
+		this.classList._s = new Set(this._className.split(/\s+/).filter(Boolean));
+	}
+	get className() { return this._className || ''; }
 	appendChild(c) { this._text = null; this.children.push(c); return c; }
 	replaceChildren(...c) { this._text = null; this.children = c; }
 	setAttribute(k, v) { this.attrs[k] = v; }
@@ -37,8 +44,9 @@ function makeContext() {
 	const document = {
 		documentElement: { dataset: { mode: 'dark' } },
 		body: new El('body'),
-		createElement: (t) => new El(t),
-		createTextNode: (t) => { const n = new El('#text'); n.textContent = t; return n; },
+		createElement: (tag) => new El(tag),
+		createElementNS: (_ns, tag) => new El(tag),
+		createTextNode: (text) => { const n = new El('#text'); n.textContent = text; return n; },
 		querySelector: () => null,
 		contains: () => true,
 		addEventListener() {}

@@ -4,7 +4,7 @@
 
 <h1 align="center">Claude Token Counter</h1>
 
-<p align="center"><b>A minimal browser extension that shows live token count, cache timer, and usage bars on claude.ai, and exports any conversation to Markdown or plain text</b></p>
+<p align="center"><b>A minimal browser extension that shows live token count, cache timer, and usage bars on claude.ai, exports any conversation to Markdown or plain text, and puts your plan limits one click away from any tab</b></p>
 
 <p align="center">
   <a href="https://chromewebstore.google.com/detail/claude-token-counter/bioobpobpbeohjoefndgkiaakboimpch">
@@ -21,8 +21,11 @@
 
 - **Token count**: approximate token count for the current conversation
 - **Cache timer**: countdown showing how long the conversation remains cached (cheaper to continue). It appears only while the context is actually cached and disappears when the window closes
-- **Usage bars**: session (5 hour) and weekly (7 day) usage from Claude's native API, with progress bars and reset countdowns (more accurate than the rounded /usage page)
+- **Usage bars**: session (5 hour) and weekly (7 day) usage from Claude's native API, with reset countdowns and more precision than the rounded `/usage` page. Bars turn amber past 75% and red past 90%
 - **Chat export**: download the current conversation as Markdown or plain text, including any files Claude generated
+- **Toolbar popup**: click the extension icon from any tab for your plan's session and weekly limits, with settings for what appears on the page and a one-click bug report
+
+The extension requests a single permission, `storage`, which carries no install-time warning. Access to claude.ai is optional and requested only if you press refresh in the popup.
 
 ## Installation
 
@@ -30,12 +33,9 @@
 1. Install directly from the [Chrome Web Store](https://chromewebstore.google.com/detail/claude-token-counter/bioobpobpbeohjoefndgkiaakboimpch). Works out of the box on Chrome, Brave, Vivaldi, and Arc. On Edge, turn on **Allow extensions from other stores** under `edge://extensions` first. On Opera, click **Add to Opera** on the listing page.
 2. Or install locally: download the latest `claude-token-counter-chrome-*.zip` from the [Releases](../../releases) page, go to the browser's extensions page (`chrome://extensions` on Chrome, `edge://extensions` on Edge, `opera://extensions` on Opera, or the equivalent for your browser), enable **Developer mode**, and drag and drop the zip onto the page.
 
-**Firefox** (requires Firefox 142 or later)
+**Firefox** (requires Firefox 128 or later)
 1. Install directly from [Firefox Browser Add-ons](https://addons.mozilla.org/en-US/firefox/addon/claude-token-counter).
 2. Or download the latest `claude-token-counter-firefox-*.zip` from the [Releases](../../releases) page and drag it into any Firefox window, then click **Add**.
-
-**Userscript (Tampermonkey / Greasemonkey)**
-1. Install the userscript by downloading `claude-token-counter-userscript-*.js` from the [Releases](../../releases) page.
 
 ## How it works
 
@@ -63,6 +63,8 @@ Runs in the isolated content script world, declared in `manifest.json` against `
 - `ui.js` renders and updates the actual widgets: the token count in the chat header, the cache countdown (based on the last assistant message's timestamp plus a 5 minute cache window), the session/weekly usage bars, and the export button. The usage row is anchored to the composer card (`.rounded-composer`) so it sits inside the input box on both the home and conversation layouts.
 - `export.js` turns a conversation payload into a Markdown or plain text document. It reuses the same trunk reconstruction as `tokens.js`, so an export contains the conversation as it currently reads, not the edited-away branches. Files Claude generated (`create_file`, and the older `artifacts` tool) are embedded in full, with every later `str_replace` edit replayed onto them so the exported file matches the version that was actually used. Tool calls collapse into a one-line summary rather than pages of JSON, and thinking blocks are excluded. The download uses a blob URL and an `<a download>` click, so no `downloads` permission is needed.
 
+- `src/popup/*` is the toolbar popup and the settings panel. It is a separate document and cannot read the content script's memory, so the content script mirrors each usage reading into `chrome.storage.local` and the popup renders that snapshot, timestamped. Pressing refresh asks for optional access to claude.ai and then reads `/api/organizations` and the usage endpoint directly, so the popup works on a fresh install without ever opening claude.ai in a tab.
+
 **3. Usage bars specifically**
 
 Usage numbers come from two sources that the extension reconciles:
@@ -72,7 +74,23 @@ Usage numbers come from two sources that the extension reconciles:
 
 A one-second interval (`tick()` in `main.js`) keeps the countdowns moving, triggers an automatic refresh right after either window rolls over, and does a once-an-hour safety refetch if neither the SSE stream nor a manual refresh has updated the numbers recently.
 
+Not every plan reports both sources. On some plans, free tier included, the REST endpoint returns `null` for every window and the SSE event is the only source, which means usage is unknown until the first message of the session. To avoid an empty row in that case the bars are seeded from the last stored reading on load. A window whose reset time has already passed is dropped rather than shown, since it no longer reflects reality.
+
+The composer itself is located by shape rather than by class name: the nearest ancestor of the text input that is a flex column with a corner radius and a painted background. Claude ships more than one composer design, and the class names differ between them.
+
 Nothing here talks to any server other than claude.ai itself. There's no analytics, no telemetry, and no third-party network calls; all computation (tokenizing, hashing, caching) happens locally in the browser.
+
+**What is stored.** Three keys in extension storage, all local to your browser and never transmitted:
+
+| Key | Contents |
+| --- | --- |
+| `cc:usageSnapshot` | the last usage reading, your organisation id, plan name, and which Claude layout was detected |
+| `cc:settings` | which on-page elements you have switched off |
+| `cc:feedbackDraft` | an unsent bug report, cleared once you open the issue |
+
+No conversation content is ever stored. Exports are written straight to a download and never uploaded.
+
+**Boundaries.** The bridge accepts messages only from its own window and addresses its replies to the page's own origin rather than broadcasting them. Organisation and conversation ids are pattern-checked before they reach a URL, so a crafted message cannot make the extension fetch a different endpoint. No `eval`, no `new Function`, and no `innerHTML` anywhere in shipped code. `npm test` enforces all of this.
 
 ## Exporting a conversation
 
@@ -80,17 +98,33 @@ Click the download icon next to the token counter in the chat header and pick **
 
 An export contains every message on the active branch, generated files in full, and one-line summaries of the tools Claude used. Alternate versions of edited messages, thinking blocks, and raw tool output are left out. Binary outputs such as `.xlsx` files live in Claude's sandbox rather than in the conversation, so they are referenced by name but cannot be embedded.
 
+## The popup
+
+Click the toolbar icon to see the 5-hour and weekly limits and when the reading was taken. It works from any tab, not just claude.ai, because it renders a stored snapshot rather than live data. The bars use the same amber and red thresholds as the ones on the page, so a limit looks equally urgent wherever you notice it.
+
+The refresh button fetches current numbers. The first press asks for access to claude.ai; declining leaves everything else working. Nothing is requested at install time.
+
+The gear beside it opens settings, with a switch for each thing the extension adds to claude.ai: the token counter, the cached context timer, the export button, and the hourly and weekly bars. Everything is on by default, changes apply to open tabs immediately, and the preferences live in extension storage.
+
+The bug icon opens a feedback box. Describe the problem and it opens a prefilled issue on this repository for you to review and submit. It deliberately does not file the issue itself: that would mean shipping a GitHub token inside the extension, where anyone could extract it. The report carries your extension version, browser, plan, and which Claude layout you are on, and you see all of it before anything is sent.
+
 ## Development
 
-There is no build step. Load `manifest.json` as an unpacked extension and reload it after editing.
+There is no build step. Load the repository root as an unpacked extension and reload it after editing; content script changes need an extension reload, not just a page refresh.
 
-The test suites cover the token/cache header, the exporter, and extension/userscript parity. They run the real content scripts in Node against a small DOM shim:
-
+```bash
+npm ci --ignore-scripts   # ESLint only; the extension ships no runtime dependencies
+npm test                  # six suites
+npm run lint
 ```
-npm test
-```
 
-The userscript in `userscript/` is a hand-maintained bundle of the same sources. `test/parity.test.js` fails if it drifts out of sync, which is how it silently fell a release behind once before.
+The suites run the real content scripts in Node against a small DOM shim, so they exercise shipped code rather than a copy: the token and cache header, the exporter, the popup, the settings switches, packaging, and a set of security guards that fail on `eval`, `innerHTML`, widened permissions, an unpinned GitHub Action, or a dependency that could execute code at install time.
+
+The version appears in `manifest.json` and `package.json`. CI and the release workflow both refuse to proceed if they disagree.
+
+## Releasing
+
+Push a `v*.*.*` tag. The workflow runs the tests and lint, checks the tag against the manifest, builds the Chrome and Firefox artifacts, verifies nothing unwanted was packaged, and publishes them with a `SHA256SUMS.txt`. Every action is pinned to a commit SHA. See [SECURITY.md](SECURITY.md) for the dependency policy.
 
 ## Credits
 

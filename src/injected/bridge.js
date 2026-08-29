@@ -22,9 +22,22 @@
 		return result;
 	};
 
+	let lastSeenOrgId = null;
+
 	window.fetch = async (...args) => {
 		const url = toAbsoluteUrl(args[0]);
 		const opts = args[1] || {};
+
+		// Learn the org id from any org-scoped call claude.ai makes. The content
+		// script otherwise depends entirely on a `lastActiveOrg` cookie, and without
+		// it every usage request is skipped in silence.
+		if (url) {
+			const orgMatch = url.match(/\/api\/organizations\/([^/?#]+)/);
+			if (orgMatch && orgMatch[1] !== lastSeenOrgId) {
+				lastSeenOrgId = orgMatch[1];
+				post('cc:org', { orgId: lastSeenOrgId });
+			}
+		}
 
 		// Detect generation start (completion requests)
 		if (url && opts.method === 'POST' && (url.includes('/completion') || url.includes('/retry_completion'))) {
@@ -49,8 +62,20 @@
 		return response;
 	};
 
+	// Payloads carry whole conversations. Address them to this origin rather than
+	// '*' so the browser refuses to deliver if the page is ever not claude.ai.
+	const TARGET_ORIGIN = window.location.origin;
+
+	// Org and conversation ids land in a URL path. Refuse anything containing a
+	// slash, dot or colon so a crafted request cannot walk to another endpoint.
+	const ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+	function safeId(value) {
+		return typeof value === 'string' && ID_PATTERN.test(value) ? value : null;
+	}
+
 	function post(type, payload) {
-		window.postMessage({ cc: CC_MARKER, type, payload }, '*');
+		window.postMessage({ cc: CC_MARKER, type, payload }, TARGET_ORIGIN);
 	}
 
 	function postResponse(requestId, ok, payload, error) {
@@ -63,7 +88,7 @@
 				payload,
 				error
 			},
-			'*'
+			TARGET_ORIGIN
 		);
 	}
 
@@ -152,8 +177,8 @@
 			}
 
 			if (kind === 'usage') {
-				const orgId = payload?.orgId;
-				if (!orgId) throw new Error('Missing orgId');
+				const orgId = safeId(payload?.orgId);
+				if (!orgId) throw new Error('Invalid orgId');
 				const res = await originalFetch(`https://claude.ai/api/organizations/${orgId}/usage`, {
 					method: 'GET',
 					credentials: 'include'
@@ -163,10 +188,20 @@
 				return;
 			}
 
+			if (kind === 'orgs') {
+				const res = await originalFetch('https://claude.ai/api/organizations', {
+					method: 'GET',
+					credentials: 'include'
+				});
+				const json = await res.json();
+				postResponse(requestId, true, json, null);
+				return;
+			}
+
 			if (kind === 'conversation') {
-				const orgId = payload?.orgId;
-				const conversationId = payload?.conversationId;
-				if (!orgId || !conversationId) throw new Error('Missing orgId/conversationId');
+				const orgId = safeId(payload?.orgId);
+				const conversationId = safeId(payload?.conversationId);
+				if (!orgId || !conversationId) throw new Error('Invalid orgId/conversationId');
 
 				const url = `https://claude.ai/api/organizations/${orgId}/chat_conversations/${conversationId}?tree=true&rendering_mode=messages&render_all_tools=true`;
 				const res = await originalFetch(url, {

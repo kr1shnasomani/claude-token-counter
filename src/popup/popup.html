@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+	<meta charset="utf-8" />
+	<title>Claude Token Counter</title>
+	<link rel="stylesheet" href="popup.css" />
+</head>
+
+<body>
+	<div class="brand">
+		<img class="brand__mark" src="../../icons/icon48.png" alt="" width="26" height="26" />
+		<span class="brand__name">Claude Token Counter</span>
+	</div>
+
+	<div class="bar">
+		<p class="eyebrow" id="eyebrow">Plan usage limits<span id="plan"></span></p>
+		<div class="bar__actions">
+			<button class="icon" id="refresh" type="button" aria-label="Refresh usage" data-tip="Refresh">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"
+					stroke-linejoin="round" width="13" height="13" aria-hidden="true">
+					<polyline points="23 4 23 10 17 10" />
+					<path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+				</svg>
+			</button>
+			<button class="icon" id="settingsBtn" type="button" aria-label="Settings" aria-pressed="false"
+				data-tip="Settings">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+					stroke-linejoin="round" width="14" height="14" aria-hidden="true">
+					<circle cx="12" cy="12" r="3" />
+					<path
+						d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+				</svg>
+			</button>
+			<button class="icon" id="feedbackBtn" type="button" aria-label="Send feedback" aria-pressed="false"
+				data-tip="Send feedback">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+					stroke-linejoin="round" width="14" height="14" aria-hidden="true">
+					<path d="M8 2v3M16 2v3M4.5 9a7.5 7.5 0 0 1 15 0v5a7.5 7.5 0 0 1-15 0z" />
+					<path d="M12 8v9M4.5 11H2M4.5 15H2M22 11h-2.5M22 15h-2.5M5 6 3 4M19 6l2-2" />
+				</svg>
+			</button>
+		</div>
+	</div>
+
+	<div id="content" hidden>
+		<section class="row">
+			<div class="row__head">
+				<span class="row__label">Hourly limit</span>
+				<span class="row__value" id="sessionValue"></span>
+			</div>
+			<div class="track">
+				<div class="fill" id="sessionFill"></div>
+			</div>
+		</section>
+
+		<section class="row" id="weeklyRow">
+			<div class="row__head">
+				<span class="row__label">Weekly limit</span>
+				<span class="row__value" id="weeklyValue"></span>
+			</div>
+			<div class="track">
+				<div class="fill" id="weeklyFill"></div>
+			</div>
+		</section>
+	</div>
+
+	<div id="settings" hidden>
+		<label class="opt"><span>Show token counter</span><input type="checkbox" data-key="tokenCounter" /><span
+				class="sw"></span></label>
+		<label class="opt"><span>Show cached context timer</span><input type="checkbox" data-key="cacheTimer" /><span
+				class="sw"></span></label>
+		<label class="opt"><span>Show export button</span><input type="checkbox" data-key="exportButton" /><span
+				class="sw"></span></label>
+		<label class="opt"><span>Show hourly usage bar</span><input type="checkbox" data-key="sessionBar" /><span
+				class="sw"></span></label>
+		<label class="opt"><span>Show weekly usage bar</span><input type="checkbox" data-key="weeklyBar" /><span
+				class="sw"></span></label>
+		<label class="opt"><span>Show usage refresh button</span><input type="checkbox" data-key="usageRefresh" /><span
+				class="sw"></span></label>
+	</div>
+
+	<div id="feedback" hidden>
+		<textarea id="feedbackText" rows="5" placeholder="Describe the issue"></textarea>
+		<p class="note" id="feedbackNote"></p>
+		<div class="btnRow">
+			<button class="btn" id="feedbackCancel" type="button">Cancel</button>
+			<button class="btn btn--primary" id="feedbackSend" type="button">Open issue</button>
+		</div>
+	</div>
+
+	<p class="empty" id="empty">No usage loaded yet &mdash; hit refresh.</p>
+
+	<div class="foot"><span class="stamp" id="stamp"></span></div>
+
+	<script src="popup.js"></script>
+</body>
+
+</html>

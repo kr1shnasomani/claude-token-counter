@@ -1,15 +1,17 @@
 {
   "manifest_version": 3,
   "name": "Claude Token Counter",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "browser_specific_settings": {
     "gecko": {
       "id": "{1ee7e9bc-8d77-4598-a99b-917e2ca6e0ae}",
-      "strict_min_version": "115.0",
+      "strict_min_version": "128.0",
       "data_collection_permissions": { "required": ["none"] }
     }
   },
-  "description": "Real-time token counter, prompt cache timer, and session/weekly usage tracker for Claude.ai conversations.",
+  "permissions": ["storage"],
+  "optional_host_permissions": ["https://claude.ai/*"],
+  "description": "Token counter, cache timer and usage bars on Claude.ai. Export any chat to Markdown, and check your limits from the toolbar.",
   "icons": {
     "16": "icons/icon16.png",
     "32": "icons/icon32.png",
@@ -20,6 +22,7 @@
   },
   "action": {
     "default_title": "Claude Token Counter",
+    "default_popup": "src/popup/popup.html",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png",

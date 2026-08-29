@@ -78,6 +78,10 @@
 			return this.request('usage', { orgId }, { timeoutMs: 15000 });
 		}
 
+		async requestOrgs() {
+			return this.request('orgs', {}, { timeoutMs: 15000 });
+		}
+
 		async requestConversation(orgId, conversationId) {
 			return this.request('conversation', { orgId, conversationId }, { timeoutMs: 20000 });
 		}

@@ -7,6 +7,8 @@ This project vendors a small amount of third‑party code/data.
 - Used for: the bundled `o200k_base` tokenizer implementation used for approximate token counting.
 - Vendored file: `src/vendor/o200k_base.js`
 - License: MIT (full text below).
+- SHA-256 of the vendored file: `e05c95b9ebdc341adcee4b67293d5a430327ec6a094c2b8de4807042c384d00f`
+- The extension bundles this file directly and fetches nothing at runtime.
 
 ### MIT License (gpt-tokenizer)
 

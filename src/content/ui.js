@@ -88,12 +88,72 @@
 		});
 	}
 
+	const SVG_NS = 'http://www.w3.org/2000/svg';
+
+	/** Build an icon through the DOM, so no markup is ever parsed from a string. */
+	function svgIcon(className, size, shapes) {
+		const svg = document.createElementNS(SVG_NS, 'svg');
+		const base = {
+			class: className,
+			viewBox: '0 0 24 24',
+			fill: 'none',
+			stroke: 'currentColor',
+			'stroke-width': '2.2',
+			'stroke-linecap': 'round',
+			'stroke-linejoin': 'round',
+			width: String(size),
+			height: String(size),
+			'aria-hidden': 'true'
+		};
+		for (const [name, value] of Object.entries(base)) svg.setAttribute(name, value);
+		for (const [tag, attrs] of shapes) {
+			const shape = document.createElementNS(SVG_NS, tag);
+			for (const [name, value] of Object.entries(attrs)) shape.setAttribute(name, value);
+			svg.appendChild(shape);
+		}
+		return svg;
+	}
+
 	function makeTooltip(text) {
 		const tip = document.createElement('div');
 		tip.className = 'bg-bg-500 text-text-000 cc-tooltip';
 		tip.textContent = text;
 		document.body.appendChild(tip);
 		return tip;
+	}
+
+	/**
+	 * Identify the composer card by what it looks like rather than what it is called.
+	 * Enterprise ships different markup from consumer plans - no `rounded-composer`
+	 * class - but on both variants the card is the nearest ancestor of the text input
+	 * that is a flex column with a real corner radius and a painted background.
+	 */
+	function findComposerCard(input) {
+		let el = input?.parentElement;
+		for (let hops = 0; el && el !== document.body && hops < 8; hops++, el = el.parentElement) {
+			const style = window.getComputedStyle(el);
+			if (style.display !== 'flex' || style.flexDirection !== 'column') continue;
+			if (parseFloat(style.borderRadius) < 4) continue;
+			const bg = style.backgroundColor;
+			if (!bg || bg === 'transparent' || bg.replace(/\s/g, '') === 'rgba(0,0,0,0)') continue;
+			return el;
+		}
+		return null;
+	}
+
+	/**
+	 * The group inside the chat header that holds the conversation title: the first
+	 * child with visible text. Used when a variant does not ship the title testid.
+	 */
+	function findHeaderTitleGroup(header) {
+		for (const child of header.children) {
+			if (child.tagName === 'BUTTON') continue;
+			if (!child.textContent || !child.textContent.trim()) continue;
+			const rect = child.getBoundingClientRect();
+			if (rect.width < 1 || rect.height < 1) continue;
+			return child;
+		}
+		return null;
 	}
 
 	class CounterUI {
@@ -125,14 +185,38 @@
 			this.weeklyBarFill = null;
 			this.sessionResetMs = null;
 			this.weeklyResetMs = null;
-			this.sessionMarker = null;
-			this.weeklyMarker = null;
-			this.sessionWindowStartMs = null;
-			this.weeklyWindowStartMs = null;
 			this.refreshingUsage = false;
 			this.refreshBtn = null;
 
 			this.domObserver = null;
+			this.settings = { ...CC.SETTINGS_DEFAULTS };
+			this.hasUsageData = false;
+			this.hasWeeklyData = false;
+		}
+
+		/** Apply a settings change without needing fresh usage data. */
+		applySettings(settings) {
+			this.settings = { ...CC.SETTINGS_DEFAULTS, ...(settings || {}) };
+			this._syncUsageVisibility();
+			this._renderHeader();
+		}
+
+		_syncUsageVisibility() {
+			// Settings decide what may be shown; data decides whether anything is. A
+			// settings change arriving before the first reading must not reveal an
+			// empty row.
+			if (!this.hasUsageData) {
+				this.usageLine?.classList.add('cc-hidden');
+				return;
+			}
+
+			const { sessionBar, weeklyBar, usageRefresh } = this.settings;
+			this.refreshBtn?.classList.toggle('cc-hidden', !usageRefresh);
+			this.sessionGroup?.classList.toggle('cc-hidden', !sessionBar);
+			// The weekly group needs both a setting and data behind it.
+			this.weeklyGroup?.classList.toggle('cc-hidden', !weeklyBar || !this.hasWeeklyData);
+			this.sessionGroup?.classList.toggle('cc-usageGroup--single', !(weeklyBar && this.hasWeeklyData));
+			this.usageLine?.classList.toggle('cc-hidden', !sessionBar && !(weeklyBar && this.hasWeeklyData));
 		}
 
 		getProgressChrome() {
@@ -144,14 +228,13 @@
 			return {
 				strokeColor: isDark ? CC.COLORS.PROGRESS_OUTLINE_DARK : CC.COLORS.PROGRESS_OUTLINE_LIGHT,
 				fillColor: isDark ? CC.COLORS.PROGRESS_FILL_DARK : CC.COLORS.PROGRESS_FILL_LIGHT,
-				markerColor: isDark ? CC.COLORS.PROGRESS_MARKER_DARK : CC.COLORS.PROGRESS_MARKER_LIGHT,
 				boldColor: isDark ? CC.COLORS.BOLD_DARK : CC.COLORS.BOLD_LIGHT,
 				cacheActiveColor: isDark ? CC.COLORS.CACHE_ACTIVE_DARK : CC.COLORS.CACHE_ACTIVE_LIGHT
 			};
 		}
 
 		refreshProgressChrome() {
-			const { strokeColor, fillColor, markerColor, boldColor } = this.getProgressChrome();
+			const { strokeColor, fillColor, boldColor } = this.getProgressChrome();
 
 			const applyBarChrome = (bar, { fillCaution, fillWarn } = {}) => {
 				if (!bar) return;
@@ -159,7 +242,6 @@
 				bar.style.setProperty('--cc-fill', fillColor);
 				bar.style.setProperty('--cc-fill-caution', fillCaution ?? fillColor);
 				bar.style.setProperty('--cc-fill-warn', fillWarn ?? fillColor);
-				bar.style.setProperty('--cc-marker', markerColor);
 			};
 
 			applyBarChrome(this.sessionBar, { fillCaution: CC.COLORS.AMBER_WARNING, fillWarn: CC.COLORS.RED_WARNING });
@@ -204,12 +286,21 @@
 			// Track pending reattach attempts independently
 			let usageReattachPending = false;
 			let headerReattachPending = false;
+			// waitForElement resolves synchronously when the anchor already exists, so
+			// the pending flags alone are no throttle. Without this, a layout we cannot
+			// attach to would re-run the search on every mutation batch - which during
+			// token streaming is hundreds of times a second.
+			const RETRY_MS = 1000;
+			let lastUsageAttempt = 0;
+			let lastHeaderAttempt = 0;
 
 			this.domObserver = new MutationObserver(() => {
+				const now = Date.now();
 				const usageMissing = this.usageLine && !document.contains(this.usageLine);
 				const headerMissing = !document.contains(this.headerContainer);
 
-				if (usageMissing && !usageReattachPending) {
+				if (usageMissing && !usageReattachPending && now - lastUsageAttempt > RETRY_MS) {
+					lastUsageAttempt = now;
 					usageReattachPending = true;
 					CC.waitForElement(CC.DOM.CHAT_INPUT, 60000).then((el) => {
 						usageReattachPending = false;
@@ -217,7 +308,8 @@
 					});
 				}
 
-				if (headerMissing && !headerReattachPending) {
+				if (headerMissing && !headerReattachPending && now - lastHeaderAttempt > RETRY_MS) {
+					lastHeaderAttempt = now;
 					headerReattachPending = true;
 					CC.waitForElement(CC.DOM.CHAT_MENU_TRIGGER, 60000).then((el) => {
 						headerReattachPending = false;
@@ -240,11 +332,7 @@
 			this.sessionBar.className = 'cc-bar cc-bar--usage';
 			this.sessionBarFill = document.createElement('div');
 			this.sessionBarFill.className = 'cc-bar__fill';
-			this.sessionMarker = document.createElement('div');
-			this.sessionMarker.className = 'cc-bar__marker cc-hidden';
-			this.sessionMarker.style.left = '0%';
 			this.sessionBar.appendChild(this.sessionBarFill);
-			this.sessionBar.appendChild(this.sessionMarker);
 
 			this.weeklyUsageSpan = document.createElement('span');
 			this.weeklyUsageSpan.className = 'cc-usageText';
@@ -253,11 +341,7 @@
 			this.weeklyBar.className = 'cc-bar cc-bar--usage';
 			this.weeklyBarFill = document.createElement('div');
 			this.weeklyBarFill.className = 'cc-bar__fill';
-			this.weeklyMarker = document.createElement('div');
-			this.weeklyMarker.className = 'cc-bar__marker cc-hidden';
-			this.weeklyMarker.style.left = '0%';
 			this.weeklyBar.appendChild(this.weeklyBarFill);
-			this.weeklyBar.appendChild(this.weeklyMarker);
 
 			this.sessionGroup = document.createElement('div');
 			this.sessionGroup.className = 'cc-usageGroup';
@@ -272,11 +356,12 @@
 			this.refreshBtn = document.createElement('button');
 			this.refreshBtn.className = 'cc-refreshBtn';
 			this.refreshBtn.setAttribute('aria-label', 'Refresh usage');
-			this.refreshBtn.innerHTML =
-				'<svg class="cc-refreshIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" width="11" height="11" aria-hidden="true">' +
-				'<polyline points="23 4 23 10 17 10"/>' +
-				'<path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>' +
-				'</svg>';
+			this.refreshBtn.appendChild(
+				svgIcon('cc-refreshIcon', 11, [
+					['polyline', { points: '23 4 23 10 17 10' }],
+					['path', { d: 'M20.49 15a9 9 0 1 1-2.12-9.36L23 10' }]
+				])
+			);
 
 			this.usageLine.appendChild(this.sessionGroup);
 			this.usageLine.appendChild(this.weeklyGroup);
@@ -305,12 +390,13 @@
 			this.exportBtn.className = 'cc-exportBtn';
 			this.exportBtn.setAttribute('aria-label', 'Export conversation');
 			this.exportBtn.setAttribute('aria-haspopup', 'menu');
-			this.exportBtn.innerHTML =
-				'<svg class="cc-exportIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" width="11" height="11" aria-hidden="true">' +
-				'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>' +
-				'<polyline points="7 10 12 15 17 10"/>' +
-				'<line x1="12" y1="15" x2="12" y2="3"/>' +
-				'</svg>';
+			this.exportBtn.appendChild(
+				svgIcon('cc-exportIcon', 11, [
+					['path', { d: 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4' }],
+					['polyline', { points: '7 10 12 15 17 10' }],
+					['line', { x1: '12', y1: '15', x2: '12', y2: '3' }]
+				])
+			);
 
 			this.exportMenu = document.createElement('div');
 			this.exportMenu.className = 'bg-bg-200 text-text-100 border-border-300 cc-exportMenu cc-hidden';
@@ -397,13 +483,13 @@
 
 			setupTooltip(
 				this.sessionGroup,
-				makeTooltip("5-hour session window.\nThe bar shows your usage.\nThe line marks where you are in the window."),
+				makeTooltip("5-hour session window.\nThe bar shows how much of it you have used."),
 				{ topOffset: 8 }
 			);
 
 			setupTooltip(
 				this.weeklyGroup,
-				makeTooltip("7-day usage window.\nThe bar shows your usage.\nThe line marks where you are in the window."),
+				makeTooltip("7-day usage window.\nThe bar shows how much of it you have used."),
 				{ topOffset: 8 }
 			);
 		}
@@ -416,10 +502,19 @@
 
 		attachHeader() {
 			const anchor = document.querySelector(CC.DOM.CHAT_MENU_TRIGGER);
-			if (!anchor) return;
-
-			if (anchor.nextElementSibling !== this.headerContainer) {
-				anchor.after(this.headerContainer);
+			if (anchor) {
+				if (anchor.nextElementSibling !== this.headerContainer) anchor.after(this.headerContainer);
+			} else {
+				// Not every Claude variant ships the title testid. Fall back to the
+				// header's own title group so the counter and the export button stay
+				// reachable instead of vanishing.
+				// The previous Claude design ships neither testid - only a semantic
+				// <header> - so fall through to that before giving up.
+				const header =
+					document.querySelector(CC.DOM.CHAT_HEADER) || document.querySelector(CC.DOM.HEADER_FALLBACK);
+				if (!header) return;
+				const host = findHeaderTitleGroup(header) || header;
+				if (this.headerContainer.parentElement !== host) host.appendChild(this.headerContainer);
 			}
 			this._renderHeader();
 			this.refreshProgressChrome();
@@ -435,15 +530,54 @@
 			// outside the card entirely (chat page), so anchoring on them either
 			// overlaps them or drops the row below the composer, against the viewport
 			// edge.
-			const card = document.querySelector(CC.DOM.CHAT_INPUT)?.closest(CC.DOM.COMPOSER_CARD);
+			const input = document.querySelector(CC.DOM.CHAT_INPUT);
+			if (!input) return;
+			const byClass = input.closest(CC.DOM.COMPOSER_CARD);
+			const card = byClass || findComposerCard(input);
 			if (!card) return;
+			CC.uiVariant = byClass ? 'new' : 'old';
 
 			// The card is a flex column, so appending puts the row on its own full-width
 			// line below the input, inside the card's padding box.
 			if (card.lastElementChild !== this.usageLine) {
 				card.appendChild(this.usageLine);
 			}
+			this._alignToComposer(card);
 			this.refreshProgressChrome();
+		}
+
+		/**
+		 * Match whatever inset the card already gives its own content, so the row lines
+		 * up with the input on layouts that use padding and on ones that use margins.
+		 * The card's first child is not reliably the content - some variants put an
+		 * overlay against the left edge - so measure the largest child instead, and
+		 * keep the stylesheet default if the answer looks degenerate.
+		 */
+		_alignToComposer(card) {
+			let content = null;
+			let largest = 0;
+			for (const child of card.children) {
+				if (child === this.usageLine) continue;
+				const rect = child.getBoundingClientRect();
+				if (rect.width < 1 || rect.height < 1) continue;
+				const area = rect.width * rect.height;
+				if (area > largest) {
+					largest = area;
+					content = rect;
+				}
+			}
+			if (!content) return;
+			const cardRect = card.getBoundingClientRect();
+			const pad = Math.round(content.left - cardRect.left);
+			if (!Number.isFinite(pad) || pad < 4 || pad >= 64) return;
+			this.usageLine.style.paddingInline = `${pad}px`;
+
+			// Layouts that inset their content with margins rather than padding leave
+			// the card with no bottom padding, which puts the row flush against the
+			// rounded border. Make up the difference ourselves.
+			const cardPadBottom = parseFloat(window.getComputedStyle(card).paddingBottom) || 0;
+			const shortfall = Math.max(0, pad - cardPadBottom);
+			this.usageLine.style.marginBottom = shortfall ? `${shortfall}px` : '';
 		}
 
 		setPendingCache(pending) {
@@ -522,24 +656,24 @@
 
 		_renderHeader() {
 			this.headerContainer.replaceChildren();
+			if (!this.lengthDisplay.textContent) return;
 
-			const hasTokens = !!this.lengthDisplay.textContent;
-			const hasCache = !!this.cachedDisplay.textContent;
+			const { tokenCounter, cacheTimer, exportButton } = this.settings;
+			const parts = [];
+			if (tokenCounter) parts.push(this.lengthGroup);
+			if (cacheTimer && this.cachedDisplay.textContent) parts.push(this.cachedDisplay);
 
-			if (!hasTokens) return;
-
-			if (hasCache) {
-				this.headerDisplay.replaceChildren(
-					this.lengthGroup,
-					document.createTextNode('\u00A0|\u00A0'),
-					this.cachedDisplay
-				);
-			} else {
-				this.headerDisplay.replaceChildren(this.lengthGroup);
+			if (parts.length) {
+				const children = [];
+				for (const part of parts) {
+					if (children.length) children.push(document.createTextNode('\u00A0|\u00A0'));
+					children.push(part);
+				}
+				this.headerDisplay.replaceChildren(...children);
+				this.headerContainer.appendChild(this.headerDisplay);
 			}
 
-			this.headerContainer.appendChild(this.headerDisplay);
-			if (this.exportBtn) this.headerContainer.appendChild(this.exportBtn);
+			if (exportButton && this.exportBtn) this.headerContainer.appendChild(this.exportBtn);
 		}
 
 		setUsage(usage) {
@@ -548,14 +682,12 @@
 			const weekly = usage?.seven_day || null;
 			const hasAnyUsage =
 				!!(session && typeof session.utilization === 'number') || !!(weekly && typeof weekly.utilization === 'number');
-			this.usageLine?.classList.toggle('cc-hidden', !hasAnyUsage);
+			this.hasUsageData = hasAnyUsage;
 
 			if (session && typeof session.utilization === 'number') {
 				const rawPct = session.utilization;
 				const pct = Math.round(rawPct * 10) / 10;
 				this.sessionResetMs = session.resets_at ? Date.parse(session.resets_at) : null;
-				const sessionWindowMs = (session.window_hours ?? 5) * 60 * 60 * 1000;
-				this.sessionWindowStartMs = this.sessionResetMs ? this.sessionResetMs - sessionWindowMs : null;
 				const resetText = this.sessionResetMs ? ` (resets in ${formatResetCountdown(this.sessionResetMs)})` : '';
 				this.sessionUsageSpan.textContent = `Hourly: ${pct}%${resetText}`;
 
@@ -569,12 +701,11 @@
 				this.sessionBarFill.style.width = '0%';
 				this.sessionBarFill.classList.remove('cc-caution', 'cc-warn', 'cc-full');
 				this.sessionResetMs = null;
-				this.sessionWindowStartMs = null;
 			}
 
-			const hasWeekly = weekly && typeof weekly.utilization === 'number';
-			this.weeklyGroup?.classList.toggle('cc-hidden', !hasWeekly);
-			this.sessionGroup?.classList.toggle('cc-usageGroup--single', !hasWeekly);
+			const hasWeekly = !!(weekly && typeof weekly.utilization === 'number');
+			this.hasWeeklyData = hasWeekly;
+			this._syncUsageVisibility();
 
 			if (hasWeekly) {
 				this.weeklyUsageSpan.classList.remove('cc-hidden');
@@ -583,8 +714,6 @@
 				const rawPct = weekly.utilization;
 				const pct = Math.round(rawPct * 10) / 10;
 				this.weeklyResetMs = weekly.resets_at ? Date.parse(weekly.resets_at) : null;
-				const weeklyWindowMs = (weekly.window_hours ?? 168) * 60 * 60 * 1000;
-				this.weeklyWindowStartMs = this.weeklyResetMs ? this.weeklyResetMs - weeklyWindowMs : null;
 				const resetText = this.weeklyResetMs ? ` (resets in ${formatResetCountdown(this.weeklyResetMs)})` : '';
 				this.weeklyUsageSpan.textContent = `Weekly: ${pct}%${resetText}`;
 
@@ -597,36 +726,7 @@
 				this.weeklyUsageSpan.classList.add('cc-hidden');
 				this.weeklyBar.classList.add('cc-hidden');
 				this.weeklyResetMs = null;
-				this.weeklyWindowStartMs = null;
 				this.weeklyBarFill.classList.remove('cc-caution', 'cc-warn', 'cc-full');
-			}
-
-			this._updateMarkers();
-		}
-
-		_updateMarkers() {
-			const now = Date.now();
-
-			if (this.sessionMarker && this.sessionWindowStartMs && this.sessionResetMs) {
-				const total = this.sessionResetMs - this.sessionWindowStartMs;
-				const elapsed = Math.max(0, Math.min(total, now - this.sessionWindowStartMs));
-				const ratio = total > 0 ? elapsed / total : 0;
-				const pct = Math.max(0, Math.min(100, ratio * 100));
-				this.sessionMarker.classList.remove('cc-hidden');
-				this.sessionMarker.style.left = `${pct}%`;
-			} else if (this.sessionMarker) {
-				this.sessionMarker.classList.add('cc-hidden');
-			}
-
-			if (this.weeklyMarker && this.weeklyWindowStartMs && this.weeklyResetMs) {
-				const total = this.weeklyResetMs - this.weeklyWindowStartMs;
-				const elapsed = Math.max(0, Math.min(total, now - this.weeklyWindowStartMs));
-				const ratio = total > 0 ? elapsed / total : 0;
-				const pct = Math.max(0, Math.min(100, ratio * 100));
-				this.weeklyMarker.classList.remove('cc-hidden');
-				this.weeklyMarker.style.left = `${pct}%`;
-			} else if (this.weeklyMarker) {
-				this.weeklyMarker.classList.add('cc-hidden');
 			}
 		}
 
@@ -650,7 +750,7 @@
 				this._renderHeader();
 			}
 
-			// Reset countdown text + time markers
+			// Reset countdown text
 			if (this.sessionResetMs && this.sessionUsageSpan?.textContent) {
 				const idx = this.sessionUsageSpan.textContent.indexOf('(resets in');
 				if (idx !== -1) {
@@ -666,8 +766,6 @@
 					this.weeklyUsageSpan.textContent = `${prefix}${formatResetCountdown(this.weeklyResetMs)})`;
 				}
 			}
-
-			this._updateMarkers();
 		}
 	}
 

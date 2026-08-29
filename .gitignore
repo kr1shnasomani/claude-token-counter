@@ -1,2 +1,8 @@
 .DS_Store
 .claude
+node_modules/
+dist/
+*.tgz
+eslint-results.sarif
+claude-token-counter-*.zip
+claude-token-counter-*.js

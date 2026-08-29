@@ -53,7 +53,6 @@
 	--cc-fill: transparent;
 	--cc-fill-caution: var(--cc-fill);
 	--cc-fill-warn: var(--cc-fill);
-	--cc-marker: transparent;
 
 	position: relative;
 	box-sizing: border-box;
@@ -89,15 +88,6 @@
 	background: var(--cc-fill-warn);
 }
 
-.cc-bar__marker {
-	position: absolute;
-	top: 0;
-	bottom: 0;
-	left: 0%;
-	width: 2px;
-	background: var(--cc-marker);
-	pointer-events: none;
-}
 
 .cc-bar--usage {
 	height: 10px;

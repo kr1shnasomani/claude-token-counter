@@ -42,12 +42,25 @@ download and are never uploaded.
 
 `npm test` includes a security suite that fails if any of the above regresses.
 
+## Build and dependency policy
+
+The extension ships **no runtime dependencies**. The only packages in
+`package.json` are ESLint and a SARIF formatter, used to test and lint.
+
+- `.npmrc` sets `ignore-scripts=true`, and every CI install runs
+  `npm ci --ignore-scripts`, so no dependency can execute code at install time
+  on a contributor's machine or in a workflow
+- `package-lock.json` pins all 124 packages by version and SHA-512 integrity,
+  all from the public npm registry
+- Every GitHub Action is pinned to a commit SHA rather than a tag, so an action
+  cannot be changed underneath a release by repointing its tag
+- `npm test` fails if any of the above regresses
+
 ## Third-party code
 
-The `o200k_base` tokenizer is vendored at `src/vendor/o200k_base.js`; its
-SHA-256 is recorded in `THIRD_PARTY_NOTICES.md`. The userscript loads the same
-tokenizer from unpkg pinned by both version and `#sha256=`, so a change to the
-published file stops it running rather than executing silently.
+The `o200k_base` tokenizer is vendored at `src/vendor/o200k_base.js` and its
+SHA-256 is recorded in `THIRD_PARTY_NOTICES.md`. The extension bundles it and
+fetches nothing at runtime.
 
-Neither of these appears in a package manifest, so Dependabot does not watch
-them. They are re-pinned by hand when the version changes.
+It does not appear in a package manifest, so Dependabot does not watch it; it is
+re-pinned by hand when the version changes.
