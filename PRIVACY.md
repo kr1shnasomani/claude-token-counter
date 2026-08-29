@@ -1,6 +1,6 @@
 # Privacy Policy for Claude Token Counter
 
-**Last updated:** May 24, 2026
+**Last updated:** August 30, 2026
 
 ## Overview
 
@@ -16,19 +16,25 @@ The extension makes requests exclusively to the following Claude API endpoints:
 - `https://claude.ai/api/organizations/{orgId}/usage` — to fetch your session and weekly usage data
 - `https://claude.ai/api/organizations/{orgId}/chat_conversations/{conversationId}` — to fetch conversation data for token counting
 
-No data from these responses is ever sent to any external server. All data is held temporarily in browser memory and discarded when the tab is closed.
+No data from these responses is ever sent to any external server.
 
-### Conversation Data
-The extension reads conversation content locally for the sole purpose of estimating token counts. This data never leaves your browser.
+### Website Content
+The extension reads text content from Claude.ai pages, including conversation data and streaming API responses, for the purposes of token counting, usage display, and chat export. This data is processed locally and never transmitted externally.
+
+### Chat Export
+The export feature converts conversation data into a Markdown file that is saved directly to your device via the browser's download mechanism. No conversation content is sent to any external server during export.
 
 ## Data Storage
 
-The extension does **not** use:
-- `chrome.storage`
+The extension uses `chrome.storage.local` (browser-local storage) for three purposes:
+
+- **Usage snapshot** — The latest token count, cache timer, and usage-bar values are saved so the toolbar popup can display them without requiring the Claude.ai tab to be in the foreground.
+- **User settings** — A single settings object (e.g., enabling or disabling the overlay) is persisted so preferences survive page reloads and browser restarts.
+- **Bug-report draft** — The feedback form in the popup auto-saves draft text so it is not lost if the popup is closed accidentally.
+
+All stored data remains on your device. The extension does **not** use:
 - `localStorage` or `sessionStorage`
 - Any remote database or analytics service
-
-All processed data exists only in memory for the duration of your session.
 
 ## Third Parties
 
