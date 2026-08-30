@@ -46,10 +46,14 @@ three-tier fallback (`chat-title-split` → `chat-header` → semantic `<header>
 Do not replace these with a single selector; that is exactly what broke before.
 
 **Not every plan reports usage the same way.** On free tier the REST endpoint
-returns `null` for every window and the SSE `message_limit` event is the only
-source, so usage is unknown until the first message of a session. The bars are
-seeded from the stored snapshot on load to cover that, and a window whose
-`resets_at` has already passed is dropped rather than shown stale.
+returns `null` for every window - before *and* after a message - and the SSE
+`message_limit` event is the only source. This has been verified exhaustively;
+do not spend time hunting for another endpoint. The row shows an explanatory
+hint rather than sitting blank. A stored window whose `resets_at` has passed is
+dropped; one that has not is kept, because usage only rises between messages, so
+it is a floor rather than a stale figure. A window with no current reading keeps
+its slot marked `—` rather than vanishing, so the row never collapses to a lone
+bar.
 
 **The version lives in two places** — `manifest.json` and `package.json`. CI and
 the release workflow both refuse to proceed if they disagree.

@@ -46,6 +46,15 @@
 	white-space: nowrap;
 }
 
+.cc-usageUnknown {
+	opacity: 0.55;
+}
+
+.cc-usageHint {
+	flex: 1;
+	opacity: 0.75;
+}
+
 /* Bars (mini + usage) */
 .cc-bar {
 	--cc-radius: 3px;

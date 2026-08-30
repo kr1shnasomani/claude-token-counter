@@ -191,6 +191,8 @@
 			this.domObserver = null;
 			this.settings = { ...CC.SETTINGS_DEFAULTS };
 			this.hasUsageData = false;
+			this.usageUnavailable = false;
+			this.hasSessionData = false;
 			this.hasWeeklyData = false;
 		}
 
@@ -201,22 +203,55 @@
 			this._renderHeader();
 		}
 
+		/**
+		 * The account reports no usage windows at all. Free plans only publish them
+		 * once a message has been sent, so say that rather than leaving a blank space
+		 * that looks like a failure.
+		 */
+		markUsageUnavailable() {
+			if (this.hasUsageData) return;
+			this.usageUnavailable = true;
+			this._syncUsageVisibility();
+		}
+
 		_syncUsageVisibility() {
 			// Settings decide what may be shown; data decides whether anything is. A
 			// settings change arriving before the first reading must not reveal an
 			// empty row.
+			this.usageHint?.classList.toggle('cc-hidden', this.hasUsageData || !this.usageUnavailable);
 			if (!this.hasUsageData) {
-				this.usageLine?.classList.add('cc-hidden');
+				this.sessionGroup?.classList.add('cc-hidden');
+				this.weeklyGroup?.classList.add('cc-hidden');
+				this.refreshBtn?.classList.toggle('cc-hidden', !this.settings.usageRefresh);
+				this.usageLine?.classList.toggle('cc-hidden', !this.usageUnavailable);
 				return;
 			}
 
+			// Each bar needs a setting AND data behind it. Neither window can be
+			// assumed present: some plans report one, the other, or neither.
 			const { sessionBar, weeklyBar, usageRefresh } = this.settings;
-			this.refreshBtn?.classList.toggle('cc-hidden', !usageRefresh);
+			const showSession = sessionBar && this.hasSessionData;
+			const showWeekly = weeklyBar && this.hasWeeklyData;
+
+			// A window with no current figure keeps its place, marked unknown, rather
+			// than vanishing: one bar on its own reads as a fault, where a pair with
+			// one blank reads as what it is.
 			this.sessionGroup?.classList.toggle('cc-hidden', !sessionBar);
-			// The weekly group needs both a setting and data behind it.
-			this.weeklyGroup?.classList.toggle('cc-hidden', !weeklyBar || !this.hasWeeklyData);
-			this.sessionGroup?.classList.toggle('cc-usageGroup--single', !(weeklyBar && this.hasWeeklyData));
-			this.usageLine?.classList.toggle('cc-hidden', !sessionBar && !(weeklyBar && this.hasWeeklyData));
+			this.weeklyGroup?.classList.toggle('cc-hidden', !weeklyBar);
+			this.sessionGroup?.classList.toggle('cc-usageGroup--single', !weeklyBar);
+			this.weeklyGroup?.classList.toggle('cc-usageGroup--single', !sessionBar);
+			this.sessionUsageSpan?.classList.toggle('cc-usageUnknown', !this.hasSessionData);
+			this.weeklyUsageSpan?.classList.toggle('cc-usageUnknown', !this.hasWeeklyData);
+			this.refreshBtn?.classList.toggle('cc-hidden', !usageRefresh);
+			this.usageLine?.classList.toggle('cc-hidden', !showSession && !showWeekly);
+			if (!this.hasSessionData) {
+				this.sessionUsageSpan.textContent = 'Hourly: \u2014';
+				this.sessionBarFill.style.width = '0%';
+			}
+			if (!this.hasWeeklyData) {
+				this.weeklyUsageSpan.textContent = 'Weekly: \u2014';
+				this.weeklyBarFill.style.width = '0%';
+			}
 		}
 
 		getProgressChrome() {
@@ -325,6 +360,12 @@
 			this.usageLine.className =
 				'text-text-400 text-[11px] cc-usageRow cc-hidden flex flex-row items-center gap-3 w-full';
 
+			// Shown when the account reports no usage at all, so an empty row does not
+			// read as a broken extension.
+			this.usageHint = document.createElement('span');
+			this.usageHint.className = 'cc-usageText cc-usageHint cc-hidden';
+			this.usageHint.textContent = 'Send a message to see usage';
+
 			this.sessionUsageSpan = document.createElement('span');
 			this.sessionUsageSpan.className = 'cc-usageText';
 
@@ -363,6 +404,7 @@
 				])
 			);
 
+			this.usageLine.appendChild(this.usageHint);
 			this.usageLine.appendChild(this.sessionGroup);
 			this.usageLine.appendChild(this.weeklyGroup);
 			this.usageLine.appendChild(this.refreshBtn);
@@ -683,7 +725,9 @@
 			const hasAnyUsage =
 				!!(session && typeof session.utilization === 'number') || !!(weekly && typeof weekly.utilization === 'number');
 			this.hasUsageData = hasAnyUsage;
+			if (hasAnyUsage) this.usageUnavailable = false;
 
+			this.hasSessionData = !!(session && typeof session.utilization === 'number');
 			if (session && typeof session.utilization === 'number') {
 				const rawPct = session.utilization;
 				const pct = Math.round(rawPct * 10) / 10;

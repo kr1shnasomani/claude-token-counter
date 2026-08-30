@@ -127,6 +127,9 @@
 	let usageFetchInFlight = false;
 	let lastUsageUpdateMs = 0;
 	let lastUsageAttemptMs = 0;
+	// A seeded reading is a placeholder, not a reading. Tracked separately so it
+	// never counts as "we already have usage".
+	let usageIsSeeded = false;
 	const rolloverHandledForResetMs = { five_hour: null, seven_day: null };
 
 	const ui = new CC.ui.CounterUI({
@@ -145,8 +148,12 @@
 	function applyUsageUpdate(normalized, source) {
 		if (!normalized) return;
 		const now = Date.now();
+		const seeded = source === 'snapshot';
 		usageState = normalized;
-		lastUsageUpdateMs = now;
+		usageIsSeeded = seeded;
+		// Deliberately not stamped for a seed: the freshness clocks drive the
+		// safety refresh, and stale numbers must not hold it off for an hour.
+		if (!seeded) lastUsageUpdateMs = now;
 		if (source === 'sse') lastUsageSseMs = now;
 		// Cache parsed timestamps to avoid Date.parse() every tick
 		usageResetMs.five_hour = normalized.five_hour?.resets_at ? Date.parse(normalized.five_hour.resets_at) : null;
@@ -182,6 +189,9 @@
 		}
 
 		const parsed = parseUsageFromUsageEndpoint(raw);
+		// A successful response carrying no windows is an answer, not a failure: this
+		// plan does not publish usage until a message has been sent.
+		if (!parsed) ui.markUsageUnavailable();
 		applyUsageUpdate(parsed, 'usage');
 	}
 
@@ -279,14 +289,19 @@
 		if (!storage || usageState) return;
 
 		const items = await storageGet(storage, 'cc:usageSnapshot');
-		const snapshot = items?.['cc:usageSnapshot'] || null;
+		const snapshot = items?.['cc:usageSnapshot'];
 		if (!snapshot || usageState) return;
 
-		const unexpired = (w) =>
-			w && typeof w.utilization === 'number' && w.resets_at && Date.parse(w.resets_at) > Date.now() ? w : null;
+		// A window whose reset has passed is not stale data waiting to be refreshed:
+		// there is no active window at all until the next message, and its true figure
+		// is unknowable until then. One that has not reset is still correct, because
+		// usage only advances when a message is sent - so it is a floor, never an
+		// overstatement. Keep those, drop the rest.
+		const current = (w) =>
+			!!w && typeof w.utilization === 'number' && !!w.resets_at && Date.parse(w.resets_at) > Date.now();
 
-		const five_hour = unexpired(snapshot.five_hour);
-		const seven_day = unexpired(snapshot.seven_day);
+		const five_hour = current(snapshot.five_hour) ? snapshot.five_hour : null;
+		const seven_day = current(snapshot.seven_day) ? snapshot.seven_day : null;
 		if (!five_hour && !seven_day) return;
 
 		applyUsageUpdate({ five_hour, seven_day }, 'snapshot');
@@ -373,7 +388,7 @@
 		// Usage is org-level, not conversation-level, so fetch it even on /new. This
 		// used to sit after the early return below, which left the popup with nothing
 		// to show until the user opened an actual conversation.
-		if (!usageState) await refreshUsage();
+		if (!usageState || usageIsSeeded) await refreshUsage();
 
 		if (!currentConversationId) {
 			ui.setConversationMetrics();

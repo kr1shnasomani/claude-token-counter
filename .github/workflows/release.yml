@@ -53,6 +53,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # only this job writes, and only to create the release
+    env:
+      # Exposed at job level so the upload step's `if` can test for it.
+      CWS_CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
 
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -105,3 +108,53 @@ jobs:
             claude-token-counter-firefox-*.zip
             SHA256SUMS.txt
           generate_release_notes: true
+
+      # Uploads the package as a draft in the Web Store dashboard. It deliberately
+      # does NOT call :publish, so nothing is submitted for review until you press
+      # the button yourself.
+      #
+      # Written with curl rather than a marketplace action on purpose: these
+      # credentials can publish to every user of the extension, and no third-party
+      # action needs that level of access.
+      #
+      # Skipped automatically when the secrets are absent, so forks still build.
+      - name: Upload package to the Chrome Web Store
+        if: env.CWS_CLIENT_ID != ''
+        run: |
+          set -euo pipefail
+          ZIP="claude-token-counter-chrome-${GITHUB_REF_NAME}.zip"
+
+          ACCESS_TOKEN=$(curl -sS --fail-with-body -X POST \
+            https://oauth2.googleapis.com/token \
+            -d client_id="$CWS_CLIENT_ID" \
+            -d client_secret="$CWS_CLIENT_SECRET" \
+            -d refresh_token="$CWS_REFRESH_TOKEN" \
+            -d grant_type=refresh_token | jq -r '.access_token // empty')
+
+          if [ -z "$ACCESS_TOKEN" ]; then
+            echo "::error::Could not exchange the refresh token. Has it been revoked?"
+            exit 1
+          fi
+
+          RESPONSE=$(curl -sS -X POST \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary @"$ZIP" \
+            "https://chromewebstore.googleapis.com/upload/v2/publishers/${CWS_PUBLISHER_ID}/items/${CWS_ITEM_ID}:upload")
+
+          echo "$RESPONSE" | jq .
+          STATE=$(echo "$RESPONSE" | jq -r '.uploadState // empty')
+
+          if [ "$STATE" != "SUCCESS" ]; then
+            echo "::error::Upload failed ($STATE). Most common cause: the version in manifest.json is not higher than the one already in the store."
+            echo "$RESPONSE" | jq -r '.itemError[]?.error_detail // empty'
+            exit 1
+          fi
+
+          echo "::notice::Uploaded $(echo "$RESPONSE" | jq -r .crxVersion) as a draft. Press Submit for review in the dashboard when ready."
+        env:
+          CWS_CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
+          CWS_CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
+          CWS_REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
+          CWS_PUBLISHER_ID: ${{ secrets.CWS_PUBLISHER_ID }}
+          CWS_ITEM_ID: bioobpobpbeohjoefndgkiaakboimpch

@@ -85,6 +85,12 @@ body {
 	letter-spacing: 0.07em;
 	text-transform: uppercase;
 	color: var(--muted);
+	/* Plan names vary in length; ENTERPRISE used to wrap onto a second line and
+	   push the bars down. Keep this to one line whatever the plan is called. */
+	min-width: 0;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 
 .row {

@@ -14,7 +14,7 @@
 	</div>
 
 	<div class="bar">
-		<p class="eyebrow" id="eyebrow">Plan usage limits<span id="plan"></span></p>
+		<p class="eyebrow" id="eyebrow">Usage limits<span id="plan"></span></p>
 		<div class="bar__actions">
 			<button class="icon" id="refresh" type="button" aria-label="Refresh usage" data-tip="Refresh">
 				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"
@@ -44,7 +44,7 @@
 	</div>
 
 	<div id="content" hidden>
-		<section class="row">
+		<section class="row" id="sessionRow">
 			<div class="row__head">
 				<span class="row__label">Hourly limit</span>
 				<span class="row__value" id="sessionValue"></span>
@@ -89,7 +89,7 @@
 		</div>
 	</div>
 
-	<p class="empty" id="empty">No usage loaded yet &mdash; hit refresh.</p>
+	<p class="empty" id="empty">No usage to show yet. Open claude.ai or hit refresh.</p>
 
 	<div class="foot"><span class="stamp" id="stamp"></span></div>
 

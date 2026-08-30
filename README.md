@@ -74,9 +74,11 @@ Usage numbers come from two sources that the extension reconciles:
 
 A one-second interval (`tick()` in `main.js`) keeps the countdowns moving, triggers an automatic refresh right after either window rolls over, and does a once-an-hour safety refetch if neither the SSE stream nor a manual refresh has updated the numbers recently.
 
-Not every plan reports both sources. On some plans, free tier included, the REST endpoint returns `null` for every window and the SSE event is the only source, which means usage is unknown until the first message of the session. To avoid an empty row in that case the bars are seeded from the last stored reading on load. A window whose reset time has already passed is dropped rather than shown, since it no longer reflects reality.
+Not every plan reports both sources. On the free plan the REST endpoint returns `null` for every window, so the SSE event that accompanies a reply is the only source and usage is unknown until the first message of a session. The row says so rather than sitting blank, and once a reading arrives it is stored and shown again on later loads. A stored window whose reset has passed is dropped, since no active window exists until the next message; one that has not is still correct, because usage only advances when a message is sent, so it is a floor rather than a stale figure. A window with no current reading keeps its place marked with a dash instead of disappearing, so the row never collapses to a single bar.
 
-The composer itself is located by shape rather than by class name: the nearest ancestor of the text input that is a flex column with a corner radius and a painted background. Claude ships more than one composer design, and the class names differ between them.
+Because the free plan's figures only ever arrive with a reply, they cannot reflect usage from another device until the next message is sent in that browser. Refresh in the popup cannot help there either, and says so instead of restamping an old reading as current. Paid plans read from the endpoint on every load, so they are always accurate across devices.
+
+The composer is located by `[data-cds="ChatComposer"]`, Claude's own design-system attribute, falling back to a `rounded-composer` class and then to shape: the nearest ancestor of the text input that is a flex column with a corner radius and a painted background. Claude ships more than one composer design and the class names differ between them.
 
 Nothing here talks to any server other than claude.ai itself. There's no analytics, no telemetry, and no third-party network calls; all computation (tokenizing, hashing, caching) happens locally in the browser.
 

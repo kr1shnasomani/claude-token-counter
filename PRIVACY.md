@@ -50,4 +50,4 @@ Any updates to this policy will be reflected in this file on the GitHub reposito
 
 ## Contact
 
-For questions or concerns, open an issue on the [GitHub repository](https://github.com/kr1shnasomani/claude-counter).
+For questions or concerns, open an issue on the [GitHub repository](https://github.com/kr1shnasomani/claude-token-counter).

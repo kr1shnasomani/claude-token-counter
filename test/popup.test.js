@@ -41,6 +41,44 @@ for (const fact of ['Extension:', 'Browser:', 'Plan:', 'Claude UI:']) {
 t('UI variant is captured on the page', read('src/content/ui.js').includes("CC.uiVariant = byClass ? 'new' : 'old'"));
 t('and carried in the snapshot', read('src/content/main.js').includes('uiVariant: CC.uiVariant'));
 
+section('refresh does not fake freshness');
+// On plans whose /usage returns empty windows, refresh cannot learn anything.
+// Moving the timestamp forward anyway would present an old reading as current.
+t('timestamp only moves when a window came back', js.includes('if (five || seven) {') && js.includes('current.updatedAt = Date.now();'));
+t('and says so instead', js.includes('does not report usage on demand'));
+t('existing values are kept, not blanked', js.includes("five || current?.five_hour || null"));
+
+section('plan labels are defined once, in two places that must agree');
+// The popup cannot import from the content script, so PLAN_LABELS exists twice.
+// A mismatch would have the page and the popup disagree about the plan.
+const labelsIn = (src) => {
+	const body = /PLAN_LABELS = \[(.*?)\];/s.exec(src);
+	return body ? [...body[1].matchAll(/\['(\w+)', '(\w+)'\]/g)].map((m) => m[1] + '=' + m[2]) : null;
+};
+const fromMain = labelsIn(read('src/content/main.js'));
+const fromPopup = labelsIn(js);
+t('both copies exist', Array.isArray(fromMain) && Array.isArray(fromPopup));
+t('and are identical', JSON.stringify(fromMain) === JSON.stringify(fromPopup), String(fromMain) + ' vs ' + String(fromPopup));
+t('unrecognised capabilities fall back to FREE', js.includes("match ? match[1] : 'FREE'"));
+
+section('the heading survives every plan name');
+// ENTERPRISE wrapped onto a second line and pushed the bars down. The heading was
+// shortened and pinned to one line rather than mislabelling the plan.
+t('heading is the short form', html.includes('Usage limits<span id="plan">') && !html.includes('Plan usage limits'));
+t('panel title matches the markup', js.includes("title: 'Usage limits'"));
+t('heading cannot wrap', /\.eyebrow \{[^}]*white-space: nowrap/s.test(css));
+t('long names ellipsize rather than overflow', /\.eyebrow \{[^}]*text-overflow: ellipsis/s.test(css));
+t('and can actually shrink', /\.eyebrow \{[^}]*min-width: 0/s.test(css));
+
+section('a window with no data is hidden, not shown blank');
+// Free tier reports no windows until the first message of a session. The session
+// row used to render regardless, giving a bare "Hourly limit" over an empty bar.
+t('session row can be hidden', html.includes('id="sessionRow"'));
+t('session visibility follows its data', js.includes("getElementById('sessionRow').hidden = !hasSession"));
+t('weekly visibility follows its data', js.includes("getElementById('weeklyRow').hidden = !hasWeekly"));
+t('neither window means the empty state', js.includes('if (!hasSession && !hasWeekly)'));
+t('renderWindow reports whether it drew anything', js.includes('const hasSession = renderWindow('));
+
 section('bars change colour at the same thresholds as the page');
 // A limit should look equally urgent on either surface. The page uses 75% and
 // 90%; the popup was left plain blue, which is worst exactly when it matters.

@@ -82,16 +82,30 @@
 			return;
 		}
 
-		document.getElementById('plan').textContent = snapshot.plan ? ` · ${snapshot.plan}` : '';
-		renderWindow(snapshot.five_hour, document.getElementById('sessionValue'), document.getElementById('sessionFill'));
-
+		const hasSession = renderWindow(
+			snapshot.five_hour,
+			document.getElementById('sessionValue'),
+			document.getElementById('sessionFill')
+		);
 		const hasWeekly = renderWindow(
 			snapshot.seven_day,
 			document.getElementById('weeklyValue'),
 			document.getElementById('weeklyFill')
 		);
+		document.getElementById('sessionRow').hidden = !hasSession;
 		document.getElementById('weeklyRow').hidden = !hasWeekly;
 
+		// Some plans report no windows at all until the first message of a session.
+		// A bare "Hourly limit" label above an empty bar looks broken; say there is
+		// nothing yet instead.
+		if (!hasSession && !hasWeekly) {
+			empty.hidden = false;
+			content.hidden = true;
+			document.getElementById('stamp').textContent = '';
+			return;
+		}
+
+		document.getElementById('plan').textContent = snapshot.plan ? ` · ${snapshot.plan}` : '';
 		document.getElementById('stamp').textContent = formatStamp(snapshot.updatedAt);
 		empty.hidden = true;
 		content.hidden = false;
@@ -220,16 +234,29 @@
 
 			// Plans whose usage endpoint reports nothing would otherwise wipe a good
 			// reading that came from the message stream. Keep what we already had.
+			const five = normalizeWindow(raw, 'five_hour');
+			const seven = normalizeWindow(raw, 'seven_day');
+
 			current = {
 				...(current || {}),
-				updatedAt: Date.now(),
 				orgId,
 				plan,
-				five_hour: normalizeWindow(raw, 'five_hour') || current?.five_hour || null,
-				seven_day: normalizeWindow(raw, 'seven_day') || current?.seven_day || null
+				five_hour: five || current?.five_hour || null,
+				seven_day: seven || current?.seven_day || null
 			};
-			storage.set({ [SNAPSHOT_KEY]: current });
-			render(current);
+
+			// Only restamp the reading when the response actually carried one. Free
+			// plans answer with empty windows, and moving the timestamp forward there
+			// would present month-old numbers as if they had just been confirmed.
+			if (five || seven) {
+				current.updatedAt = Date.now();
+				storage.set({ [SNAPSHOT_KEY]: current });
+				render(current);
+			} else {
+				storage.set({ [SNAPSHOT_KEY]: current });
+				render(current);
+				stamp.textContent = 'Your plan does not report usage on demand';
+			}
 		} catch {
 			stamp.textContent = 'Could not refresh';
 		} finally {
@@ -241,7 +268,7 @@
 	// --- settings panel ---------------------------------------------------------
 
 	const PANELS = {
-		usage: { title: 'Plan usage limits' },
+		usage: { title: 'Usage limits' },
 		settings: { title: 'Settings', panel: 'settings', button: 'settingsBtn' },
 		feedback: { title: 'Send feedback', panel: 'feedback', button: 'feedbackBtn' }
 	};

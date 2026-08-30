@@ -8,7 +8,10 @@
 		CHAT_HEADER: '[data-testid="chat-header"]',
 		HEADER_FALLBACK: 'header',
 		CHAT_INPUT: '[data-testid="chat-input"]',
-		COMPOSER_CARD: '[class*="rounded-composer"]',
+		// Claude names the composer in its own design-system attribute, which is a
+		// far better anchor than either a utility class or a shape heuristic. The
+		// other two remain as fallbacks for layouts that predate it.
+		COMPOSER_CARD: '[data-cds="ChatComposer"], [class*="rounded-composer"]',
 		BRIDGE_SCRIPT_ID: 'cc-bridge-script'
 	});
 
